@@ -31,4 +31,4 @@
 个人自用项目，仅复用**自己账号**已有的水卡与免密签约，不涉及账号共享、代刷或余额篡改。
 所有金额、优惠、订单均由服务端计算。非官方项目，与杭州企鹅科技有限公司无关联。
 
-完整技术细节见 [docs/TECH.md](docs/TECH.md)。
+完整技术细节见 [技术文档](https://github.com/Sakehol/JieShui/blob/main/docs/TECH.md)。
