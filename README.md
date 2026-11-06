@@ -6,8 +6,7 @@
 这个项目把那一条链路单独拆出来，做成两个形态 —— **一个 285 KB 的安卓 APK**，和**一个不用安装的网页**。
 
 <p align="center">
-  <img src="docs/img/android-home.png" width="200" alt="首页">
-  <img src="docs/img/pwa-home.png" width="200" alt="首页">
+  <img src="docs/img/pwa-home.png" width="300" alt="首页">
 </p>
 
 ---
