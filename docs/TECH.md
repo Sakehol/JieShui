@@ -471,7 +471,7 @@ tools/            开发辅助
   ├ flow_perf.js        解码开销：各尺寸下 jsQR 每帧耗时，用来定降频阈值
   └ cdp.js / flow_*.js  无头浏览器截图与流程验证
 ref/              参考实现（wzs0512/qiekj-android 的关键文件，仅作比对）
-shots/            界面截图（不入仓库，宣传图在 docs/img/）
+shots/            界面截图（不入仓库）
 ```
 
 ## 说明
