@@ -7,9 +7,6 @@
 
 <p align="center">
   <img src="docs/img/android-home.png" width="200" alt="首页">
-  <img src="docs/img/android-ready.png" width="200" alt="扫码后机器即可出水">
-  <img src="docs/img/android-flowing.png" width="200" alt="接水中">
-  <img src="docs/img/android-result.png" width="200" alt="结算明细">
 </p>
 
 ---
