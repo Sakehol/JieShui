@@ -7,6 +7,7 @@
 
 <p align="center">
   <img src="docs/img/android-home.png" width="200" alt="首页">
+  <img src="docs/img/pwa-home.png" width="200" alt="首页">
 </p>
 
 ---
