@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="theme-color" content="#0a0e14" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<!-- 安全策略：只允许本站脚本 + 官方接口；禁掉内联脚本与内联样式。
+     token 防窃取的三条关键约束：
+       script-src 'self'      —— 注入的 <script> / eval 都不执行，XSS 拿不到 token
+       style-src 'self'       —— 已把内联样式全部抽成 class，这里留最小集，挡住用 CSS 选择器外泄
+       connect-src 只列官方  —— 即使有代码被执行，也没法把 token POST 到别处
+     注意这是 meta 版（兜底）：它不支持 frame-ancestors。真正生效的完整策略是
+     Cloudflare Pages 的响应头版（见 tools/gen_headers.py 生成的 web/_headers）。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://userapi.qiekj.com; font-src 'self' data:; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; upgrade-insecure-requests" />
+<meta name="referrer" content="no-referrer" />
+<meta http-equiv="X-Content-Type-Options" content="nosniff" />
+<title>接水</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ============ 启动/登录 ============ -->
+<section id="gate" class="gate">
+  <div class="gate-inner">
+    <div class="logo">💧</div>
+    <h1>接水</h1>
+    <p class="sub">扫码即开 · 无广告 · 支付宝免密</p>
+
+    <p id="gateMsg" class="gate-msg hidden"></p>
+
+    <div id="tab-phone" class="tab-body">
+      <label class="field">
+        <span>手机号</span>
+        <input id="phone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号" autocomplete="tel" />
+      </label>
+      <label class="field">
+        <span>验证码</span>
+        <div class="row">
+          <input id="code" type="tel" inputmode="numeric" maxlength="6" placeholder="短信验证码" />
+          <button id="sendCode" class="ghost">获取</button>
+        </div>
+      </label>
+      <button id="doLogin" class="primary">登录</button>
+    </div>
+
+    <p class="hint">账号数据仍在胖乖生活服务器，水卡与免密签约直接沿用。</p>
+    <p class="hint tiny-adv"><a href="#" id="advToken">已有 Token？改用 Token 登录</a></p>
+
+    <div id="tokenBox" class="hidden">
+      <label class="field">
+        <span>Token</span>
+        <textarea id="tokenInput" rows="3" placeholder="粘贴从原 App 拿到的 token"></textarea>
+      </label>
+      <button id="useToken" class="ghost wide">使用此 Token</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 主界面 ============ -->
+<main id="app" class="app hidden">
+  <header class="bar">
+    <div class="bar-left">
+      <span class="dot" id="netDot"></span>
+      <strong>接水</strong>
+    </div>
+    <div class="bar-right">
+      <span id="quotaBadge" class="badge hidden"></span>
+      <button id="btnSettings" class="icon" aria-label="设置">⚙︎</button>
+    </div>
+  </header>
+
+  <!-- 扫码区 -->
+  <section id="home" class="screen">
+    <button id="scanBtn" class="scan-orb">
+      <svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+        <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/>
+        <path d="M3 12h18"/>
+      </svg>
+      <span>扫码接水</span>
+    </button>
+    <p class="tiny">对准饮水机上的二维码，或手动输入设备号</p>
+
+    <div class="tips">
+      <div class="tip"><span class="t-ico">💳</span><div><b>支付宝免密</b><i>接完自动结算，无需扫码付款</i></div></div>
+      <div class="tip"><span class="t-ico">🎟️</span><div><b>水卡自动生效</b><i>余额与优惠在云端，无需迁移</i></div></div>
+      <div class="tip"><span class="t-ico">🚫</span><div><b>无广告无弹窗</b><i>打开即扫，只做接水这一件事</i></div></div>
+    </div>
+
+    <div class="quick">
+      <div class="quick-head">
+        <span>常用设备</span>
+        <button id="btnRefreshDevices" class="link">从账号同步</button>
+      </div>
+      <div id="deviceList" class="device-list"><div class="empty">暂无记录</div></div>
+    </div>
+  </section>
+
+  <!-- 设备详情 / 接水控制 -->
+  <section id="device" class="screen hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2 id="devName">设备</h2>
+          <p id="devMeta" class="meta"></p>
+        </div>
+        <button id="btnCloseDevice" class="icon">&times;</button>
+      </div>
+      <div id="quotaLine" class="quota-line hidden"></div>
+    </div>
+
+    <div class="card center">
+      <div id="stateRing" class="ring">
+        <div class="ring-inner">
+          <div id="stateTitle">准备就绪</div>
+          <div id="stateSub" class="tiny">点击下方按钮开始接水</div>
+        </div>
+      </div>
+      <div id="flowLine" class="flow hidden">
+        <span>已接</span><b id="flowAmount">—</b>
+      </div>
+      <button id="actionBtn" class="primary big">开始接水</button>
+      <p id="actionHint" class="tiny"></p>
+    </div>
+  </section>
+
+  <!-- 结果 -->
+  <section id="result" class="screen hidden">
+    <div class="card center">
+      <div class="ok">✓</div>
+      <h2>接水完成</h2>
+      <p id="resultMsg" class="meta"></p>
+      <div id="resultRows" class="kv"></div>
+      <button id="btnDone" class="primary">完成</button>
+    </div>
+  </section>
+</main>
+
+<!-- ============ 扫码覆盖层 ============ -->
+<div id="scanner" class="scanner hidden">
+  <video id="video" playsinline muted></video>
+  <div class="scan-frame"><i></i><i></i><i></i><i></i></div>
+  <div class="scanner-top">
+    <button id="btnScannerClose" class="icon light">&times;</button>
+    <span>把二维码放进框内</span>
+    <button id="btnTorch" class="icon light">☀︎</button>
+  </div>
+  <div class="scanner-bottom">
+    <button id="btnManual" class="ghost light">手动输入设备号</button>
+  </div>
+</div>
+
+<!-- ============ 设置 ============ -->
+<div id="settings" class="sheet hidden">
+  <div class="sheet-inner">
+    <h3>设置</h3>
+    <div class="kv">
+      <div><span>账号</span><b id="setPhone">—</b></div>
+      <div><span>Token</span><b id="setToken">—</b></div>
+    </div>
+    <button id="btnShowToken" class="ghost wide">查看并复制完整 Token</button>
+    <div id="tokenFullBox" class="hidden">
+      <p class="tiny">整段复制下面这串即可，在另一台设备的登录页「已有 Token？」里粘贴就能直接登录。不要在公共电脑上开着这个框。</p>
+      <textarea id="tokenFull" rows="3" readonly></textarea>
+      <div class="row-2">
+        <button id="btnCopyToken" class="ghost">复制</button>
+        <button id="btnHideToken" class="ghost">收起</button>
+      </div>
+    </div>
+    <label class="check">
+      <input type="checkbox" id="remember" />
+      <span>记住登录（本机会保存，公用设备请勿勾选）</span>
+    </label>
+    <label class="field">
+      <span>支付方式</span>
+      <select id="payTypeSel">
+        <option value="15">支付宝免密（推荐）</option>
+        <option value="">默认（由服务端决定）</option>
+      </select>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="autoStart" />
+      <span>进入首页后自动打开扫码</span>
+    </label>
+    <button id="btnLogout" class="danger">退出登录</button>
+    <button id="btnCloseSettings" class="ghost">关闭</button>
+    <p class="tiny">接口：userapi.qiekj.com · 非官方客户端，仅个人使用</p>
+  </div>
+</div>
+
+<!-- ============ 手动输入 ============ -->
+<div id="manual" class="sheet hidden">
+  <div class="sheet-inner">
+    <h3>输入设备号</h3>
+    <label class="field">
+      <span>二维码内容 / 设备编号</span>
+      <textarea id="manualInput" rows="3" placeholder="扫描结果文本，或饮水机上的编号"></textarea>
+    </label>
+    <button id="btnManualOk" class="primary">确定</button>
+    <button id="btnManualCancel" class="ghost">取消</button>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="jsQR.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

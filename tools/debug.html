@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>接水 · 诊断</title>
+<style>
+  :root { --bg:#0a0e14; --card:#151d2a; --line:#22303f; --fg:#e8eef7; --fg2:#8fa3ba; --accent:#2f9cf4; --ok:#2ecc8f; --err:#ff5d5d; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; padding:16px 14px 40px; }
+  h1 { font-size:17px; margin:0 0 4px; }
+  p.sub { color:var(--fg2); font-size:12.5px; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; margin-bottom:12px; }
+  .row { display:flex; gap:10px; }
+  button { flex:1; background:var(--accent); color:#fff; border:0; border-radius:11px; padding:12px; font-size:14.5px; font-weight:600; }
+  button.ghost { background:#0f1722; color:var(--fg); border:1px solid var(--line); }
+  pre { margin:8px 0 0; padding:10px; background:#0d141d; border-radius:9px; font-size:11.5px; line-height:1.45; overflow-x:auto; white-space:pre-wrap; word-break:break-all; max-height:340px; overflow-y:auto; }
+  .k { color:var(--fg2); font-size:12px; margin:10px 0 0; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  .name { font-weight:600; }
+  .dev { padding:9px 0; border-bottom:1px solid var(--line); cursor:pointer; }
+  .dev:last-child { border-bottom:0; }
+  .dev .m { color:var(--fg2); font-size:12px; }
+</style>
+</head>
+<body>
+  <h1>诊断</h1>
+  <p class="sub">用你当前登录态直接打接口，把原始返回贴出来就能定位问题。</p>
+
+  <div class="card">
+    <div class="k" style="margin-top:0">登录态</div>
+    <pre id="who">读取中…</pre>
+  </div>
+
+  <div class="card">
+    <div class="k" style="margin-top:0">常用设备（点一个开始查）</div>
+    <div id="devs" class="k">加载中…</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button class="ghost" id="btnAll">全部重跑</button>
+      <button id="btnCopy">复制结果</button>
+    </div>
+  </div>
+
+  <div id="out"></div>
+
+<script>
+const BASE = 'https://userapi.qiekj.com/';
+const APP_VERSION = '1.145.0';
+const APP_SECRET = 'nFU9pbG8YQoAe1kFh+E7eyrdlSLglwEJeA0wwHB1j5o=';
+const UA = 'okhttp/3.14.9';
+const PROMOTIONS = '[{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"-6"},{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"7"}]';
+const $ = s => document.querySelector(s);
+const getTok = () => localStorage.getItem('qk_token') || '';
+
+/* ---- 纯 JS SHA-256（http 局域网下 crypto.subtle 不可用） ---- */
+function SHA256(msg) {
+  const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const rrot = (x, n) => (x >>> n) | (x << (32 - n));
+  const utf8 = unescape(encodeURIComponent(msg));
+  const len = utf8.length;
+  const words = [];
+  for (let i = 0; i < len; i++) words[i >> 2] = (words[i >> 2] || 0) | (utf8.charCodeAt(i) << (24 - (i % 4) * 8));
+  words[len >> 2] = (words[len >> 2] || 0) | (0x80 << (24 - (len % 4) * 8));
+  const total = ((len + 8 >> 6) + 1) * 16;
+  for (let i = 0; i < total; i++) words[i] = words[i] || 0;
+  words[total - 1] = len * 8;
+  let H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const W = new Array(64);
+  for (let blk = 0; blk < total; blk += 16) {
+    for (let i = 0; i < 16; i++) W[i] = words[blk + i] | 0;
+    for (let i = 16; i < 64; i++) {
+      const s0 = rrot(W[i-15],7) ^ rrot(W[i-15],18) ^ (W[i-15] >>> 3);
+      const s1 = rrot(W[i-2],17) ^ rrot(W[i-2],19) ^ (W[i-2] >>> 10);
+      W[i] = (W[i-16] + s0 + W[i-7] + s1) | 0;
+    }
+    let [a,b,c,d,e,f,g,h] = H;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rrot(e,6) ^ rrot(e,11) ^ rrot(e,25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[i] + W[i]) | 0;
+      const S0 = rrot(a,2) ^ rrot(a,13) ^ rrot(a,22);
+      const mj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + mj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0;
+      d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H = [ (H[0]+a)|0,(H[1]+b)|0,(H[2]+c)|0,(H[3]+d)|0,(H[4]+e)|0,(H[5]+f)|0,(H[6]+g)|0,(H[7]+h)|0 ];
+  }
+  return H.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+}
+function sign(path, ts, token) {
+  return SHA256('appSecret=' + APP_SECRET + '&channel=android_app&timestamp=' + ts
+    + '&token=' + (token || '') + '&version=' + APP_VERSION + '&/' + path);
+}
+
+const log = [];
+async function call(path, params = {}) {
+  const token = getTok();
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === '') continue;
+    body.append(k, String(v));
+  }
+  if (token) body.append('token', token);
+  const ts = String(Date.now());
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+    'Version': APP_VERSION, 'channel': 'android_app', 'phoneBrand': 'Redmi',
+    'User-Agent': UA, 'timestamp': ts, 'sign': sign(path, ts, token),
+    'Accept': 'application/json, text/plain, */*'
+  };
+  if (token) { headers['Authorization'] = token; headers['token'] = token; }
+  const started = Date.now();
+  let status = 0, text = '', err = '';
+  try {
+    const res = await fetch(BASE + path, { method: 'POST', headers, body: body.toString(), mode: 'cors' });
+    status = res.status;
+    text = await res.text();
+  } catch (e) {
+    err = e.name + ': ' + e.message;
+  }
+  const ms = Date.now() - started;
+  log.push({ path, params, status, ms, body: text || err });
+  return { path, status, ms, text, err };
+}
+
+function block(title, r) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  const okClass = (r.status === 200 && r.text && !r.text.includes('"code":-1')) ? 'ok' : 'err';
+  let pretty = r.text;
+  try { pretty = JSON.stringify(JSON.parse(r.text), null, 1); } catch (_) { }
+  el.innerHTML = `<div class="k" style="margin-top:0"><span class="${okClass}">${r.status || 'ERR'}</span>
+      · ${r.ms}ms · ${title}</div><pre>${escapeHtml(pretty || r.err || '(空)')}</pre>`;
+  $('#out').appendChild(el);
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function runChain(dev) {
+  $('#out').innerHTML = '';
+  log.length = 0;
+  const gid = dev.goodsId;
+
+  const balance = await call('user/balance');
+  block('user/balance（小票余额）', balance);
+
+  const details = await call('goods/normal/details', { goodsId: gid });
+  block('goods/normal/details（设备详情）', details);
+
+  const skus = await call('goods/normal/skus', { goodsId: gid });
+  block('goods/normal/skus（计费方式）', skus);
+
+  // 换个写法再试一次，排除参数/大小写问题
+  const skus2 = await call('goods/normal/skus', { goodsId: String(gid), categoryCode: '04' });
+  block('goods/normal/skus（带 categoryCode 再试）', skus2);
+
+  let imei = '';
+  try { imei = (JSON.parse(details.text).data || {}).imei || ''; } catch (_) { }
+  if (imei) {
+    const scan = await call('goods/scan/v2', { SN: imei });
+    block('goods/scan/v2（SN=' + imei + '）', scan);
+  }
+
+  const quota = await call('waterQuota/getActive', { shopId: dev.orgId, categoryCode: '04' });
+  block('waterQuota/getActive（水卡额度）', quota);
+}
+
+async function boot() {
+  const token = getTok();
+  const phone = localStorage.getItem('qk_phone') || '(未知)';
+  $('#who').innerHTML = token
+    ? escapeHtml(phone + '\n token: ' + token.slice(0, 8) + '…' + token.slice(-6) + '（' + token.length + ' 位）')
+    : '<span class="err">本地没有 token，请先用手机号登录一次</span>';
+  if (!token) return;
+
+  const r = await call('goods/latestUsed', { categoryCode: '04' });
+  let list = [];
+  try { list = JSON.parse(r.text).data || []; } catch (_) { }
+  if (!Array.isArray(list)) list = [];
+  const box = $('#devs');
+  box.innerHTML = '';
+  if (!list.length) {
+    box.innerHTML = '<span class="err">没有设备（可能 token 失效，请看下方原始返回）</span>';
+    block('goods/latestUsed（常用设备）', r);
+    return;
+  }
+  list.forEach(d => {
+    const el = document.createElement('div');
+    el.className = 'dev';
+    el.innerHTML = `<div class="name">${escapeHtml(d.goodsName || '饮水机')}</div>
+      <div class="m">${escapeHtml(d.orgName || '')} · goodsId ${escapeHtml(String(d.goodsId))}</div>`;
+    el.onclick = () => runChain(d);
+    box.appendChild(el);
+  });
+  window.__first = list[0];
+  runChain(list[0]);
+}
+
+$('#btnAll').onclick = () => window.__first && runChain(window.__first);
+$('#btnCopy').onclick = async () => {
+  const txt = log.map(x => '### ' + x.path + ' ' + JSON.stringify(x.params) + '\n' + (x.body || '')).join('\n\n');
+  try { await navigator.clipboard.writeText(txt); $('#btnCopy').textContent = '已复制'; }
+  catch (_) { $('#btnCopy').textContent = '复制失败'; }
+  setTimeout(() => { $('#btnCopy').textContent = '复制结果'; }, 1600);
+};
+boot();
+</script>
+</body>
+</html>

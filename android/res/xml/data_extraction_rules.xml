@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  云备份 / 设备迁移规则：本 App 的本地数据全部含账号信息（token、手机号、设备号），
+  不让任何备份通道带出去。allowBackup 已设为 false，这里是 Android 12+ 的补充声明，
+  防止部分厂商 ROM 忽略 allowBackup 仍然备份。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

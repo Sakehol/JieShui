@@ -1,0 +1,190 @@
+:root{
+  --bg:#0a0e14;
+  --bg2:#111823;
+  --card:#151d2a;
+  --line:#22303f;
+  --fg:#e8eef7;
+  --fg2:#8fa3ba;
+  --accent:#2f9cf4;
+  --accent2:#1f7fd4;
+  --ok:#2ecc8f;
+  --warn:#f5a623;
+  --err:#ff5d5d;
+  --safe-b:env(safe-area-inset-bottom,0px);
+  --safe-t:env(safe-area-inset-top,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  overscroll-behavior:none;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+.hidden{display:none!important}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+input,textarea,select{
+  font:inherit;color:var(--fg);background:#0d141d;border:1px solid var(--line);
+  border-radius:12px;padding:13px 14px;width:100%;outline:none;
+}
+input:focus,textarea:focus,select:focus{border-color:var(--accent)}
+textarea{resize:none}
+h1,h2,h3{margin:0;font-weight:650;letter-spacing:.2px}
+
+/* ---------- 登录 ---------- */
+.gate{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px}
+.gate-inner{width:100%;max-width:380px;text-align:center}
+.logo{font-size:52px;line-height:1}
+.gate h1{margin:10px 0 4px;font-size:26px}
+.sub{color:var(--fg2);margin:0 0 22px;font-size:13px}
+.tabs{display:flex;gap:6px;background:#0d141d;border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:16px}
+.tab{flex:1;padding:9px;border-radius:9px;color:var(--fg2);font-size:14px}
+.tab.active{background:var(--card);color:var(--fg)}
+.tab-body{text-align:left}
+#tokenBox{margin-top:12px;text-align:left}
+.tiny-adv{margin-top:10px}
+.tiny-adv a{color:var(--fg2);text-decoration:none;border-bottom:1px dashed var(--line)}
+.ghost.wide{width:100%;padding:11px;margin-top:4px}
+#tokenFullBox{margin-top:10px;margin-bottom:14px}
+#tokenFullBox .tiny{margin:0 0 8px}
+#tokenFull{width:100%;font-size:12px;line-height:1.5;color:var(--fg2);word-break:break-all}
+.row-2{display:flex;gap:10px;margin-top:10px}
+.row-2 .ghost{flex:1;width:auto;margin-top:0;padding:11px}
+.gate-msg{
+  margin:14px 0 20px;padding:10px 12px;border-radius:11px;
+  background:rgba(255,93,93,.12);border:1px solid rgba(255,93,93,.35);
+  color:#ff9a9a;font-size:13px;line-height:1.5;text-align:left;
+}
+.field{display:block;margin-bottom:12px}
+.field>span{display:block;font-size:12px;color:var(--fg2);margin-bottom:6px;padding-left:2px}
+.row{display:flex;gap:8px}
+.row input{flex:1}
+.primary{
+  width:100%;padding:14px;border-radius:13px;background:var(--accent);color:#fff;
+  font-weight:650;font-size:16px;margin-top:4px;
+  transition:transform .12s,background .2s;
+}
+.primary:active{transform:scale(.985);background:var(--accent2)}
+.primary.big{padding:17px;font-size:17px;border-radius:15px}
+.primary[disabled]{opacity:.5}
+.ghost{
+  padding:0 16px;border-radius:12px;border:1px solid var(--line);
+  background:#0d141d;color:var(--fg);font-size:14px;white-space:nowrap;
+}
+.ghost:disabled{opacity:.45}
+.ghost.light{border-color:rgba(255,255,255,.35);background:rgba(0,0,0,.4);color:#fff}
+.danger{width:100%;padding:13px;border-radius:12px;background:rgba(255,93,93,.12);color:var(--err);font-weight:600;margin-bottom:10px}
+.icon{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;font-size:20px;color:var(--fg2)}
+.icon.light{color:#fff;background:rgba(0,0,0,.45)}
+.hint{margin-top:18px;font-size:12px;color:var(--fg2);line-height:1.6}
+.tiny{font-size:12px;color:var(--fg2);margin:6px 0 0}
+
+/* ---------- 主界面 ---------- */
+.app{min-height:100%;display:flex;flex-direction:column;padding:0 16px calc(20px + var(--safe-b))}
+.bar{
+  position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;
+  padding:calc(10px + var(--safe-t)) 0 10px;background:linear-gradient(var(--bg) 70%,transparent);
+}
+.bar-left{display:flex;align-items:center;gap:8px;font-size:16px}
+.bar-right{display:flex;align-items:center;gap:8px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+.dot.off{background:var(--err)}
+.badge{font-size:11px;padding:4px 9px;border-radius:20px;background:rgba(47,156,244,.15);color:#7cc4ff;border:1px solid rgba(47,156,244,.3)}
+.screen{flex:1;display:flex;flex-direction:column;gap:14px}
+
+.scan-orb{
+  margin:26px auto 0;width:200px;height:200px;border-radius:50%;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  color:#fff;background:radial-gradient(circle at 50% 35%,#2f9cf4,#155f9e 70%);
+  box-shadow:0 0 0 1px rgba(47,156,244,.4),0 18px 50px -12px rgba(47,156,244,.7);
+  transition:transform .15s;
+}
+.scan-orb:active{transform:scale(.97)}
+.scan-orb span{font-size:15px;font-weight:650;letter-spacing:.5px}
+.tiny{text-align:center}
+
+.tips{display:flex;flex-direction:column;gap:9px;margin-top:22px}
+.tip{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--card);border:1px solid var(--line);border-radius:14px}
+.tip .t-ico{width:34px;height:34px;border-radius:10px;background:#0f1722;display:grid;place-items:center;font-size:17px;flex:none}
+.tip b{display:block;font-size:13.5px;font-weight:600}
+.tip i{display:block;font-style:normal;font-size:12px;color:var(--fg2);margin-top:2px}
+.quick{margin-top:auto;padding-top:20px}
+.quick-head{display:flex;justify-content:space-between;align-items:center;color:var(--fg2);font-size:13px;margin-bottom:8px}
+.link{color:var(--accent);font-size:13px}
+.device-list{display:flex;flex-direction:column;gap:8px}
+.device{display:flex;align-items:center;gap:12px;padding:13px 14px;background:var(--card);border:1px solid var(--line);border-radius:14px;text-align:left;width:100%}
+.device:active{background:#1a2434}
+.device .d-ico{width:34px;height:34px;border-radius:10px;background:rgba(47,156,244,.12);display:grid;place-items:center;font-size:17px}
+.device .d-main{flex:1;min-width:0}
+.device .d-name{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device .d-sub{font-size:12px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.empty{padding:22px;text-align:center;color:var(--fg2);font-size:13px;background:var(--card);border:1px dashed var(--line);border-radius:14px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px}
+.card.center{text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.card-head h2{font-size:17px}
+.meta{color:var(--fg2);font-size:12px;margin:4px 0 0}
+/* 结算异常（订单没建出来 / 支付未确认）时的提示，用警示色，不能和正常"已结算"长一样 */
+.meta.warn{color:#ffb454;font-size:12.5px;line-height:1.5}
+.quota-line{margin-top:12px;padding:10px 12px;border-radius:11px;background:rgba(46,204,143,.1);color:#6fe0b0;font-size:13px;border:1px solid rgba(46,204,143,.22)}
+/* 单位（元/L 等）。原来写成行内 style，CSP 收紧后行内样式会被拦，改成 class */
+
+.ring{
+  width:190px;height:190px;border-radius:50%;display:grid;place-items:center;
+  /* 角度用自定义属性传：CSP 的 style-src 'self' 会拦掉 el.style.background=...，
+     但 CSSOM 的 setProperty('--deg', ...) 不属于内联样式声明，不受该策略限制。 */
+  --deg:0deg;
+  background:conic-gradient(var(--accent) var(--deg),rgba(47,156,244,.13) var(--deg));
+  transition:background .3s;
+}
+.ring-inner{width:158px;height:158px;border-radius:50%;background:var(--card);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:12px}
+#stateTitle{font-size:17px;font-weight:650}
+.flow{display:flex;gap:8px;align-items:baseline;font-size:13px;color:var(--fg2)}
+.flow b{color:#7cc4ff;font-size:19px}
+.kv{width:100%;display:flex;flex-direction:column;gap:9px;margin:12px 0}
+.kv>div{display:flex;justify-content:space-between;gap:12px;font-size:13px}
+.kv span{color:var(--fg2)}
+.kv b{font-weight:600;word-break:break-all;text-align:right}
+.ok{width:62px;height:62px;border-radius:50%;background:rgba(46,204,143,.15);color:var(--ok);display:grid;place-items:center;font-size:30px}
+
+/* ---------- 扫码 ---------- */
+.scanner{position:fixed;inset:0;background:#000;z-index:50}
+/* 取景窗做成一个正方形，和扫描框完全重合 —— 框里看到的就是程序解的那块像素。
+   不用全屏 video，是因为摄像头流的方向和屏幕经常对不上：
+   手机竖屏拿，安卓给过来的往往是一路 1280x720 的横向流，
+   铺满全屏用 cover 会横向裁掉 74%（看起来"相机自己放大了 3.8 倍"），
+   用 contain 又只能显示屏幕中间一条 219px 高的细带，同样难对准。
+   做成正方形窗后，裁切量固定在 1.78 倍，且裁掉的部分被框线明确标了出来。 */
+.scanner video{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:var(--scan-side,min(78vw,330px));height:var(--scan-side,min(78vw,330px));
+  object-fit:cover;background:#000;border-radius:20px}
+.scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:var(--scan-side,min(78vw,330px));height:var(--scan-side,min(78vw,330px));
+  border-radius:20px;box-shadow:0 0 0 100vmax rgba(0,0,0,.6)}
+.scan-frame i{position:absolute;width:26px;height:26px;border:3px solid #fff;border-radius:4px}
+.scan-frame i:nth-child(1){top:-2px;left:-2px;border-right:0;border-bottom:0}
+.scan-frame i:nth-child(2){top:-2px;right:-2px;border-left:0;border-bottom:0}
+.scan-frame i:nth-child(3){bottom:-2px;left:-2px;border-right:0;border-top:0}
+.scan-frame i:nth-child(4){bottom:-2px;right:-2px;border-left:0;border-top:0}
+.scanner-top{position:absolute;top:calc(12px + var(--safe-t));left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:0 14px;color:#fff;font-size:14px}
+.scanner-bottom{position:absolute;bottom:calc(28px + var(--safe-b));left:0;right:0;display:flex;justify-content:center}
+
+/* ---------- 弹层 ---------- */
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end}
+.sheet-inner{width:100%;background:var(--bg2);border-radius:22px 22px 0 0;padding:20px 18px calc(20px + var(--safe-b));max-height:88vh;overflow:auto}
+.sheet-inner h3{margin-bottom:14px;font-size:17px}
+.sheet-inner .ghost,.sheet-inner .primary{width:100%;padding:13px;margin-top:10px;text-align:center}
+.sheet-inner .primary{margin-top:4px}
+.check{display:flex;align-items:center;gap:10px;padding:12px 0;font-size:14px;color:var(--fg)}
+.check input{width:auto;transform:scale(1.15);accent-color:var(--accent)}
+
+.toast{
+  position:fixed;left:50%;bottom:calc(38px + var(--safe-b));transform:translateX(-50%);
+  background:rgba(30,42,58,.96);color:#fff;padding:11px 18px;border-radius:12px;
+  font-size:13px;max-width:86vw;text-align:center;z-index:80;border:1px solid var(--line);
+  animation:tin .18s ease;
+}
+@keyframes tin{from{opacity:0;transform:translate(-50%,8px)}}
+.toast.err{background:rgba(90,28,28,.96);border-color:rgba(255,93,93,.4)}

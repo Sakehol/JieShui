@@ -1,0 +1,8 @@
+{
+  // Cloudflare Pages 项目配置（`npx wrangler pages deploy` 会读这个文件）
+  // 注意：Pages 模式不支持 "assets" 字段，只用 pages_build_output_dir。
+  // 之前的 "assets" + "binding" 是 Workers 静态资源写法，Pages 会拒绝。
+  "name": "jieshui",
+  "compatibility_date": "2025-01-01",
+  "pages_build_output_dir": "./web"
+}

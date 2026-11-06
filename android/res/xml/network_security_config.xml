@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置：只允许与官方接口走 TLS，且只信任系统 CA。
+
+  目的是挡「网络侧攻击」：
+  1. cleartextTrafficPermitted=false —— 任何 http:// 明文请求直接被系统拒绝，
+     防止降级攻击 / 公共 WiFi 下的明文嗅探。
+  2. trust-anchors 只列 certificates src="system"，不列 src="user" ——
+     攻击者在手机上装个 mitmproxy / Charles 的根证书也没用，
+     因为 App 不会把它当可信 CA（默认 targetSdk>=24 本来就是这行为，
+     这里显式写出来，避免以后被系统默认值或 ROM 改动悄悄放宽）。
+  3. 不配置 <debug-overrides>：release 版没有任何「信任用户证书」的例外分支。
+
+  注意：这不会影响正常使用 —— 官方接口用的是系统根 CA 签发的证书，走系统信任链即可。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- 只为官方接口做细分，明确禁止明文，防止有人改 BASE 后忘了这条 -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">qiekj.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
