@@ -59,7 +59,6 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
 
     private TextView hintView;
     private boolean torchOn = false;
-    private int boxSidePx = 0;    // 取景框边长（屏幕 px）
     private int surfaceW = 0, surfaceH = 0;  // 预览画面的显示尺寸
     private int fullTick = 0;     // 兜底整幅解也要限流，见 decode()
 
@@ -79,33 +78,47 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
         holder = surfaceView.getHolder();
         holder.addCallback(this);
 
-        // 取景框
+        // 取景框 + 框外压暗。
+        // 这层是**整屏大小**的，中间挖一个 side×side 的方洞 —— 和网页端一样，
+        // 画面全屏可见（能看见周围环境），只是框外压暗一档。
+        // 早先是把预览缩成小方块，框外全黑，用户以为相机画幅就这么点，已改回全屏。
+        final int side = Math.min(
+                Math.min(getResources().getDisplayMetrics().widthPixels,
+                        getResources().getDisplayMetrics().heightPixels) * 72 / 100,
+                Ui.dp(this, 300));
         View frame = new View(this) {
             @Override
             protected void onDraw(android.graphics.Canvas cv) {
+                float w = getWidth(), h = getHeight();
+                float cx = w / 2f, cy = h / 2f, half = side / 2f;
+                float l = cx - half, r = cx + half, t = cy - half, bt = cy + half;
+
+                android.graphics.Paint dim = new android.graphics.Paint();
+                dim.setColor(0x9E000000);
+                cv.drawRect(0, 0, w, t, dim);
+                cv.drawRect(0, bt, w, h, dim);
+                cv.drawRect(0, t, l, bt, dim);
+                cv.drawRect(r, t, w, bt, dim);
+
                 android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
                 p.setStyle(android.graphics.Paint.Style.STROKE);
                 p.setStrokeWidth(Ui.dp(ScanActivity.this, 3));
                 p.setColor(Color.WHITE);
                 p.setStrokeCap(android.graphics.Paint.Cap.ROUND);
-                float w = getWidth(), h = getHeight(), len = w * 0.22f;
-                float l = Ui.dp(ScanActivity.this, 2), r = w - l, t = l, bt = h - l;
-                cv.drawLine(l, t, l + len, t, p);
-                cv.drawLine(l, t, l, t + len, p);
-                cv.drawLine(r - len, t, r, t, p);
-                cv.drawLine(r, t, r, t + len, p);
-                cv.drawLine(l, bt - len, l, bt, p);
-                cv.drawLine(l, bt, l + len, bt, p);
-                cv.drawLine(r, bt - len, r, bt, p);
-                cv.drawLine(r - len, bt, r, bt, p);
+                float len = side * 0.22f;
+                float e = Ui.dp(ScanActivity.this, 2);
+                cv.drawLine(l + e, t + e, l + e + len, t + e, p);
+                cv.drawLine(l + e, t + e, l + e, t + e + len, p);
+                cv.drawLine(r - e - len, t + e, r - e, t + e, p);
+                cv.drawLine(r - e, t + e, r - e, t + e + len, p);
+                cv.drawLine(l + e, bt - e - len, l + e, bt - e, p);
+                cv.drawLine(l + e, bt - e, l + e + len, bt - e, p);
+                cv.drawLine(r - e, bt - e - len, r - e, bt - e, p);
+                cv.drawLine(r - e - len, bt - e, r - e, bt - e, p);
             }
         };
-        int side = Math.min(getResources().getDisplayMetrics().widthPixels,
-                getResources().getDisplayMetrics().heightPixels) * 68 / 100;
-        boxSidePx = side;
-        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(side, side);
-        flp.gravity = Gravity.CENTER;
-        root.addView(frame, flp);
+        root.addView(frame, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // 顶部栏
         LinearLayout top = Ui.row(this);
@@ -215,14 +228,14 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
             }
             List<Camera.Size> sizes = pr.getSupportedPreviewSizes();
             if (sizes != null && !sizes.isEmpty()) {
-                // 挑「取景框里能拿到最多原生像素」的那一档，同分时取总面积最小的。
+                // 挑「解的那块里能拿到最多原生像素」的那一档，同分时取总面积最小的。
                 //
                 // 以前按「短边最大」挑，看上去合理，其实不对：
                 // 预览是按比例铺满屏幕的，比例越窄，铺上去放大得越狠，
-                // 同一个取景框落到的原生像素反而越少。以 1080x2400 的屏幕为例，
-                //   1440x1080 要把 4:3 拉到 20:9，放大 1.67 倍 → 框内只有 440 像素
-                //   1920x1080 放大 1.25 倍                        → 框内 587 像素
-                // 两者短边都是 1080，旧规则会挑前者，白白少 33% 的解析力。
+                // 同一块区域落到的原生像素反而越少。以 1080x2400 的屏幕为例，
+                //   1440x1080 要把 4:3 拉到 20:9，放大 1.67 倍 → 只有 648 像素
+                //   1920x1080 放大 1.25 倍                        → 有 864 像素
+                // 两者短边都是 1080，旧规则会挑前者，白白少 25% 的解析力。
                 Camera.Size best = null;
                 int bestRoi = 0;
                 long bestArea = Long.MAX_VALUE;
@@ -247,6 +260,12 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
                 if (best != null) pr.setPreviewSize(best.width, best.height);
             }
             pr.setPreviewFormat(android.graphics.ImageFormat.NV21);
+            // 数码变焦归位。有些机器上一次用完留了个非 1 的变焦，
+            // 表现就是"相机自己放大了、退远了反而扫不上"。
+            try {
+                if (pr.isZoomSupported() && pr.getZoom() != 0) pr.setZoom(0);
+            } catch (Exception ignored) {
+            }
             camera.setParameters(pr);
             applySurfaceLayout(pr.getPreviewSize());
 
@@ -387,6 +406,22 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
                 handled = true;
                 final String out = text;
                 ui.post(() -> {
+                    // 扫到就震一下：手抖的时候眼睛可能没看屏幕，
+                    // 触感是"成了"最直接的反馈。网页端一直有（navigator.vibrate(40)），
+                    // 这边补上，两端才一致。
+                    try {
+                        android.os.Vibrator vb =
+                                (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
+                        if (vb != null) {
+                            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                                vb.vibrate(android.os.VibrationEffect.createOneShot(
+                                        40, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+                            } else {
+                                vb.vibrate(40);
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
                     setResult(RESULT_OK, new Intent().putExtra(EXTRA_RESULT, out));
                     finish();
                 });
@@ -425,8 +460,19 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
      * 给定预览尺寸，算出取景框里能拿到多少原生像素。
      * 屏幕短边 68% 的方框，按 cover 铺满后落到预览上还剩多长的一条边。
      */
+    /**
+     * 取景框所在的那块区域，换成原生像素有多大。
+     *
+     * 这里返回的**不是**框本身的边长，而是"屏幕上完整可见的最大正方形" ——
+     * 它一定把框整个包住，四边还多一圈余量。和网页端用的是同一套规则
+     * （web/app.js 的 layoutScanFrame），两端必须一致，否则同一个码在一端能扫、
+     * 另一端扫不了，很难解释。
+     *
+     * 取大一点是安全方向：只会多认，不会少认。而取小了就是硬伤 ——
+     * 扫码距离完全由"码在画面里占多少原生像素"决定。
+     */
     private int roiSideFor(int pw, int ph) {
-        if (boxSidePx <= 0 || pw <= 0 || ph <= 0) return 0;
+        if (pw <= 0 || ph <= 0) return 0;
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
         // 预览旋转后宽高互换
@@ -434,9 +480,8 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
         float rw = (rotation == 90 || rotation == 270) ? ph : pw;
         float rh = (rotation == 90 || rotation == 270) ? pw : ph;
         float scale = Math.max(screenW / rw, screenH / rh);
-        float vw = rw * scale, vh = rh * scale;
-        float fx = boxSidePx / vw, fy = boxSidePx / vh;
-        return Math.round(Math.min(fx * rw, fy * rh));
+        int side = Math.round(Math.min(screenW, screenH) / scale);
+        return Math.max(1, Math.min(side, (int) Math.min(rw, rh)));
     }
 
     @Override

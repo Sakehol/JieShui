@@ -267,11 +267,50 @@ public class ScanCoreTest {
         System.out.println();
     }
 
+    // ---------- 5. inverted (dark background, light modules) ----------
+
+    /**
+     * Some dispenser screens are dark with a light QR, and some stickers are
+     * printed that way. scanROI alone never finds those: every binarizer in
+     * ZXing assumes dark modules on a light field. ScanCore therefore also tries
+     * the inverted crop, but only on frames that already lost the full-frame
+     * fallback, so the cost lands on ~1/8 of frames.
+     */
+    static void testInverted() {
+        System.out.println("== 5. dark background / light modules ==");
+        int w = 1280, h = 960, roi = 587;
+        // The code must FIT inside the region ScanCore actually crops (587px here),
+        // otherwise this only re-tests the oversized-code fallback from step 3.
+        int codePx = 440;
+        int[][] q = qrGray(900);
+        int[] inv = new int[q[0].length];
+        for (int i = 0; i < inv.length; i++) inv[i] = 255 - q[0][i];
+
+        // light field with a dark code (normal) -- must still work
+        byte[] normal = frame(w, h);
+        for (int i = 0; i < normal.length; i++) normal[i] = (byte) (240);
+        stamp(normal, w, h, q[0], 900, codePx, w / 2, h / 2);
+        check("normal polarity still decodes",
+                ScanCore.decode(newReader(), normal, w, h, roi, false) != null);
+
+        // dark field with a light code (inverted) -- needs the extra pass
+        byte[] dark = new byte[w * h];
+        for (int i = 0; i < dark.length; i++) dark[i] = (byte) 15;
+        stamp(dark, w, h, inv, 900, codePx, w / 2, h / 2);
+        String roiOnly = ScanCore.decode(newReader(), dark, w, h, roi, false);
+        String withFull = ScanCore.decode(newReader(), dark, w, h, roi, true);
+        System.out.println("   roi only -> " + (roiOnly != null ? "OK" : "MISS")
+                + "   with inverted pass -> " + (withFull != null ? "OK" : "MISS"));
+        check("inverted pass rescues a light-on-dark code", withFull != null);
+        System.out.println();
+    }
+
     public static void main(String[] a) {
         testRotation();
         testDistance();
         testFallback();
         testCost();
+        testInverted();
         System.out.println(fails == 0 ? "ALL PASS" : (fails + " FAILED"));
         if (fails != 0) System.exit(1);
     }

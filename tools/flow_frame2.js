@@ -1,7 +1,8 @@
-// 几何自洽性：取景框和 video 元素必须完全重合，
-// 且 scanROI 必须等于 video 原生帧的中心正方形（= 屏幕上显示的那块）。
-const QR_B64 = require('fs').readFileSync('build/qr_b64.txt', 'utf8').trim();
-
+// 几何自洽性（全屏预览 + 暗罩取景框版）：
+//   1) video 必须铺满整个视口（不是缩成一个小方块 —— 那样框外全黑，用户以为相机坏了）
+//   2) 取景框必须是居中的正方形，边长 = min(视口宽,高) * 0.72（上限 300）
+//   3) scanROI 必须是"屏幕上完整可见的最大正方形"换算回原生像素，
+//      且**必须包住取景框**——这是安全方向：只会多认，不会少认
 module.exports = async (page, { sleep }) => {
   const out = {};
   try {
@@ -34,17 +35,36 @@ module.exports = async (page, { sleep }) => {
             layoutScanFrame();
             const vr = v.getBoundingClientRect();
             const fr = frame.getBoundingClientRect();
-            // 框与 video 元素是否重合（容差 2px）
-            const coincide = Math.abs(vr.left - fr.left) < 2 && Math.abs(vr.top - fr.top) < 2
-                          && Math.abs(vr.width - fr.width) < 2 && Math.abs(vr.height - fr.height) < 2;
-            // 显示区域 = 原生帧中心正方形
-            const roiSide = Math.min(vw, vh);
-            const roi = window.scanROI;
-            const roiOK = roi && Math.abs(roi.w - roiSide) < 1 && Math.abs(roi.h - roiSide) < 1;
-            // 这个正方形在屏幕上的等效放大倍数：显示边长 / 原生边长
-            const scale = +(vr.width / roiSide).toFixed(2);
-            r({ label, stream: vw + 'x' + vh, roi: roi && { w: Math.round(roi.w), x: Math.round(roi.x), y: Math.round(roi.y) },
-                screenSide: Math.round(vr.width), scale, coincide, roiOK, realVW: v.videoWidth });
+            const roi = window.__scanROI || window.scanROI;
+
+            // 1) 预览铺满视口（CSS 用 inset:0 + 100%/100%，读取时也应等于视口）
+            const fillsScreen = Math.abs(vr.width - innerWidth) < 2
+                             && Math.abs(vr.height - innerHeight) < 2;
+
+            // 2) 框是居中正方形，边长符合 72% / 300 上限
+            const expectSide = Math.min(Math.round(Math.min(innerWidth, innerHeight) * 0.72), 300);
+            const square = Math.abs(fr.width - fr.height) < 1;
+            const rightSize = Math.abs(fr.width - expectSide) <= 1;
+            const centred = Math.abs((fr.left + fr.width / 2) - innerWidth / 2) < 1
+                         && Math.abs((fr.top + fr.height / 2) - innerHeight / 2) < 1;
+
+            // 3) 框在原生帧里占多大，必须落在 scanROI 之内
+            const scale = Math.max(innerWidth / vw, innerHeight / vh);
+            const frameInNative = fr.width / scale;
+            const covers = roi && roi.w + 0.5 >= frameInNative;
+
+            // scanROI 应为"屏幕上完整可见的最大正方形"换算回原生像素
+            const expectRoi = Math.min(Math.round(Math.min(innerWidth, innerHeight) / scale), Math.min(vw, vh));
+
+            r({ label, stream: vw + 'x' + vh,
+                fillsScreen, square, rightSize, centred,
+                frameSide: Math.round(fr.width),
+                frameInNative: Math.round(frameInNative),
+                roi: roi && Math.round(roi.w),
+                expectRoi,
+                roiOK: roi && Math.abs(roi.w - expectRoi) <= 2,
+                covers,
+                zoom: +(fr.width / frameInNative).toFixed(2) });
           }, 600));
       }
 
@@ -52,6 +72,7 @@ module.exports = async (page, { sleep }) => {
       results.portrait = await test(720, 1280, 'portrait');
       results.square = await test(720, 720, 'square');
       results.vga = await test(640, 480, 'vga');
+      results.hd = await test(1920, 1440, 'hd');
       return results;
     })()`);
 

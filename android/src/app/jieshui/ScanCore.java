@@ -1,6 +1,8 @@
 package app.jieshui;
 
 import com.google.zxing.BinaryBitmap;
+import com.google.zxing.InvertedLuminanceSource;
+import com.google.zxing.LuminanceSource;
 import com.google.zxing.MultiFormatReader;
 import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.Result;
@@ -39,8 +41,15 @@ public final class ScanCore {
                 String r = decodeSquare(reader, cropCenter(yuv, w, h, roiSide), roiSide);
                 if (r != null) return r;
             }
+            // 整幅兜底的次数本来就被限流到每 8 帧一次，这里再补一次反色尝试，
+            // 只在这 1/8 的帧上多花一点点，换取深色底 + 亮码这类贴纸也能认。
             if (allowFull) {
-                return decodeFull(reader, yuv, w, h);
+                String r = decodeFull(reader, yuv, w, h);
+                if (r != null) return r;
+                if (roiSide > 0) {
+                    byte[] box = cropCenter(yuv, w, h, roiSide);
+                    return decodeSquare(reader, invert(box, box.length), roiSide);
+                }
             }
         } catch (Exception ignored) {
         } finally {
@@ -56,6 +65,13 @@ public final class ScanCore {
         for (int y = 0; y < side; y++) {
             System.arraycopy(src, (sy + y) * w + sx, out, y * side, side);
         }
+        return out;
+    }
+
+    /** 反色。有些饮水机屏幕是深底亮码，或贴了反光膜，亮度直方图整个反过来了。 */
+    public static byte[] invert(byte[] gray, int n) {
+        byte[] out = new byte[n];
+        for (int i = 0; i < n; i++) out[i] = (byte) (255 - (gray[i] & 0xFF));
         return out;
     }
 
@@ -75,8 +91,7 @@ public final class ScanCore {
     /** 整幅解（兜底）。注意 PlanarYUVLuminanceSource 必须传真实的宽和高，不能取 min。 */
     private static String decodeFull(MultiFormatReader reader, byte[] buf, int w, int h) {
         try {
-            PlanarYUVLuminanceSource src =
-                    new PlanarYUVLuminanceSource(buf, w, h, 0, 0, w, h, false);
+            LuminanceSource src = new PlanarYUVLuminanceSource(buf, w, h, 0, 0, w, h, false);
             Result r = reader.decodeWithState(new BinaryBitmap(new HybridBinarizer(src)));
             if (r != null && r.getText() != null) return r.getText();
         } catch (com.google.zxing.NotFoundException nf) {

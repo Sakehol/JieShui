@@ -544,32 +544,42 @@ async function openScanner() {
   tickScan();
 }
 
-/* 让"看到的"和"认的"完全重合。
-   取景窗是一个固定大小的正方形（屏幕短边的 78%，最大 330px），
-   video 用 object-fit:cover 铺满这个正方形 —— 于是画面里显示出来的，
-   恰好就是摄像头原生帧中心那个 min(w,h) 的正方形，一点不多一点不少。
-   scanROI 就取这块，解码时按原生像素切出来，不缩放、不插值。
+/* 取景框只是"给眼睛看的准星"，解码范围故意比它大一圈。
+   取景框是屏幕短边的 72%，解码取的是**屏幕上完整可见的最大正方形**
+   （短边 / cover 缩放比），后者一定把框整个包住，还多出四周一圈余量 ——
+   这是刻意的安全方向：**只会多认，不会少认**。
 
-   之前踩过的两个坑，都是"看到的不等于认的"造成的：
-   1) 全屏 cover + 横向流：横向被裁掉 74%，看起来像相机自己放大了 3.8 倍，
-      用户以为拍太近就往后退，码在真实画面里越来越小，反而扫不到。
-   2) 全屏 contain + 固定方框：画面只占屏幕中间一条 219px 高的细带，
+   为什么不干脆对齐成一样大？因为对齐之后识别距离会暴跌：
+   一个 280px 的框换算回原生像素只有 200 出头，而扫码距离完全由
+   "码在画面里占多少原生像素"决定（见 README 里的数据表）。
+
+   之前踩过的坑，都是"看到的不等于认的"造成的：
+   1) 全屏 cover 但解的是整幅缩到 480：远处的小码在 480 里只剩十几个像素，认不出。
+   2) 把 video 缩成小方块只显示框内：框外全黑，用户以为相机坏了（已改回全屏）。
+   3) 全屏 contain + 固定方框：画面只占中间一条 219px 高的细带，
       方框比它还高，框的上下落在黑边上 —— 用户照框去对，码其实出画面了。 */
 function layoutScanFrame() {
   const video = $('#video');
   if (!video) return;
-  const side = Math.min(Math.round(Math.min(innerWidth, innerHeight) * 0.78), 330);
+  const side = Math.min(Math.round(Math.min(innerWidth, innerHeight) * 0.72), 300);
   document.documentElement.style.setProperty('--scan-side', side + 'px');
 
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) { scanROI = null; return; }
-  // cover 到正方形 → 显示的就是中心正方形区域
-  const roiSide = Math.min(vw, vh);
+
+  // 与 CSS 的 object-fit:cover 完全同一套几何：取较大的缩放比，画面铺满屏幕、多出来的裁掉
+  const scale = Math.max(innerWidth / vw, innerHeight / vh);
+  // 屏幕上完整可见的最大正方形，换算回原生像素
+  let roiSide = Math.round(Math.min(innerWidth, innerHeight) / scale);
+  roiSide = Math.max(1, Math.min(roiSide, Math.min(vw, vh)));
   scanROI = {
-    x: (vw - roiSide) / 2,
-    y: (vh - roiSide) / 2,
+    x: Math.round((vw - roiSide) / 2),
+    y: Math.round((vh - roiSide) / 2),
     w: roiSide, h: roiSide
   };
+  // scanROI 是模块级 let，不会挂到 window 上，回归脚本读不到。
+  // 这里额外暴露一份只读的副本，纯粹给 tools/flow_frame2.js 断言用。
+  window.__scanROI = scanROI;
 }
 let scanROI = null;
 
@@ -653,34 +663,52 @@ async function tickScan() {
         return;
       }
 
-      // 第一遍：引导框对应的那块原生像素（scanROI），**不放大**。
-      // 这一遍是主力：用户是把码对准框的，框里的东西才是他真正想扫的。
+      // 第一遍：中心正方形那块原生像素（scanROI），**不放大**。
+      // 这一遍是主力：取景框一直居中，框里的码一定落在这块里，反过来还多兜一圈框外。
+      //
       // 实测二维码在画面里只占 10%（约 72px）时，整幅压到 720 认不出，
       // 直接取原生像素能认出；而把 720 再放大到 960 只是插值，救不回来还更慢
       // （960 要 15.7ms，原生 ROI 只要 12.2ms）。所以这里保持原始像素密度。
       //
       // 上限 1080：jsQR 的耗时随面积增长，1440 的 ROI 要 30~40ms/帧，
-      // 而实测把 1440 缩到 1080 解，识别力和原生基本一样
-      // （tools/flow_caps.js：1920x1440 的流，码占 12% 时能过，720 的流过不了）。
-      // 换句话说，摄像头给的分辨率越高，缩到 1080 之后每模块仍有足够像素。
+      // 而实测把 1440 缩到 1080 解，识别力和原生基本一样。
+      //
+      // 这一遍**不做反色**：attemptBoth 要多花约 40% 的时间（flow_perf.js：
+      // 720 单遍 6.8ms、两遍 9.5ms），而绝大多数码是深码浅底的，
+      // 把它挪到兜底那一遍（每 3 帧一次）才划算。
       if (scanROI) {
         const r = scanROI;
         const sc = Math.min(1, 1080 / Math.max(r.w, r.h));
         const w = Math.round(r.w * sc), h = Math.round(r.h * sc);
         cv.width = w; cv.height = h;
         ctx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, w, h);
-        code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+        code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
       }
 
-      // 第二遍：整幅画面，长边压到 720。兜底用 —— 码很大、超出取景窗，
-      // 或者手一歪把码带到框外时，靠这一遍还能救回来。
-      // 隔 3 帧跑一次就够，主力是第一遍。
+      // 第二遍（兜底，每 3 帧一次）：先整幅压到 720，再对中心块反色试一遍。
+      //   - 整幅：码很大、超出取景窗，或者手一歪把码带到框外时靠它救回来；
+      //   - 反色：深底亮码的屏幕和反光贴纸，亮度直方图整个反过来了，
+      //     jsQR 默认只认深码浅底，不反色就永远认不出。
       if (!code && frameNo % 3 === 0) {
         const sc = Math.min(1, 720 / Math.max(vw, vh));
         const w = Math.round(vw * sc), h = Math.round(vh * sc);
         cv.width = w; cv.height = h;
         ctx.drawImage(video, 0, 0, w, h);
         code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+
+        if (!code && scanROI) {
+          const r = scanROI;
+          const sc2 = Math.min(1, 1080 / Math.max(r.w, r.h));
+          const w2 = Math.round(r.w * sc2), h2 = Math.round(r.h * sc2);
+          cv.width = w2; cv.height = h2;
+          ctx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, w2, h2);
+          // 这里必须用 invertFirst，不能用 onlyInvert：
+          // jsQR 的 onlyInvert 会走 `scan(inverted)`，但 inverted 只在
+          // shouldInvert（attemptBoth / invertFirst）为真时才由 binarize 产出，
+          // 用 onlyInvert 拿到的是 undefined，直接抛
+          // "Cannot read properties of undefined (reading 'height')"。
+          code = window.jsQR(ctx.getImageData(0, 0, w2, h2).data, w2, h2, { inversionAttempts: 'invertFirst' });
+        }
       }
 
       if (code && code.data) {

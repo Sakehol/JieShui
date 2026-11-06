@@ -150,19 +150,21 @@ h1,h2,h3{margin:0;font-weight:650;letter-spacing:.2px}
 .ok{width:62px;height:62px;border-radius:50%;background:rgba(46,204,143,.15);color:var(--ok);display:grid;place-items:center;font-size:30px}
 
 /* ---------- 扫码 ---------- */
-.scanner{position:fixed;inset:0;background:#000;z-index:50}
-/* 取景窗做成一个正方形，和扫描框完全重合 —— 框里看到的就是程序解的那块像素。
-   不用全屏 video，是因为摄像头流的方向和屏幕经常对不上：
-   手机竖屏拿，安卓给过来的往往是一路 1280x720 的横向流，
-   铺满全屏用 cover 会横向裁掉 74%（看起来"相机自己放大了 3.8 倍"），
-   用 contain 又只能显示屏幕中间一条 219px 高的细带，同样难对准。
-   做成正方形窗后，裁切量固定在 1.78 倍，且裁掉的部分被框线明确标了出来。 */
-.scanner video{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
-  width:var(--scan-side,min(78vw,330px));height:var(--scan-side,min(78vw,330px));
-  object-fit:cover;background:#000;border-radius:20px}
+.scanner{position:fixed;inset:0;background:#000;z-index:50;overflow:hidden}
+/* 预览铺满整屏（cover），取景框是叠在上面的一层「挖了个方洞的暗罩」。
+   早先试过把 video 本身缩成一个小正方形，好处是"框里看到的像素 == 解的那块"，
+   但框外全是纯黑，看着像相机坏了。现在改成业界通用的样子：画面全屏、
+   框外用暗罩压暗，视觉上能看见周围环境，也知道该把码往哪儿放。
+
+   代价是 cover 会把画面放大（竖屏 9:19.5 上拿 16:9 的流，横向只露出约 26%）。
+   这部分靠两件事抵消：一是优先要 4:3 的流（露出比例从 26% 提到约 35%，且不做上采样），
+   二是解码范围取的是**原生帧中心正方形**，比框里能看见的区域更大，
+   所以框里出现的码一定能被解到 —— 只会多认，不会少认。 */
+.scanner video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
 .scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-  width:var(--scan-side,min(78vw,330px));height:var(--scan-side,min(78vw,330px));
-  border-radius:20px;box-shadow:0 0 0 100vmax rgba(0,0,0,.6)}
+  width:var(--scan-side,min(72vw,300px));height:var(--scan-side,min(72vw,300px));
+  border-radius:20px;
+  box-shadow:0 0 0 100vmax rgba(0,0,0,.62), inset 0 0 0 1px rgba(255,255,255,.18)}
 .scan-frame i{position:absolute;width:26px;height:26px;border:3px solid #fff;border-radius:4px}
 .scan-frame i:nth-child(1){top:-2px;left:-2px;border-right:0;border-bottom:0}
 .scan-frame i:nth-child(2){top:-2px;right:-2px;border-left:0;border-bottom:0}
