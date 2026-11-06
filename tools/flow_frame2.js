@@ -1,8 +1,9 @@
-// 几何自洽性（全屏预览 + 暗罩取景框版）：
-//   1) video 必须铺满整个视口（不是缩成一个小方块 —— 那样框外全黑，用户以为相机坏了）
-//   2) 取景框必须是居中的正方形，边长 = min(视口宽,高) * 0.72（上限 300）
-//   3) scanROI 必须是"屏幕上完整可见的最大正方形"换算回原生像素，
-//      且**必须包住取景框**——这是安全方向：只会多认，不会少认
+// 几何自洽性（整幅显示 + 中央准星版）：
+//   1) video 元素铺满整个视口（contain 由 CSS 负责，元素本身是满屏的）
+//   2) 视频画面在屏幕上的矩形必须**完整落在视口内**（contain ⇒ 不裁切）
+//   3) 取景框必须是**居中正方形 + 完全落在画面矩形内**（这是上一版最大的坑：
+//      框比画面还高，上下落在黑边上，用户照框去对，码其实已经出画面）
+//   4) scanROI 必须是整幅原生帧（画面整幅显示 ⇒ 解码也整幅，看了的都能认）
 module.exports = async (page, { sleep }) => {
   const out = {};
   try {
@@ -36,35 +37,40 @@ module.exports = async (page, { sleep }) => {
             const vr = v.getBoundingClientRect();
             const fr = frame.getBoundingClientRect();
             const roi = window.__scanROI || window.scanROI;
+            const rect = window.__scanRect || {};
 
-            // 1) 预览铺满视口（CSS 用 inset:0 + 100%/100%，读取时也应等于视口）
+            // 1) video 元素铺满视口
             const fillsScreen = Math.abs(vr.width - innerWidth) < 2
                              && Math.abs(vr.height - innerHeight) < 2;
 
-            // 2) 框是居中正方形，边长符合 72% / 300 上限
-            const expectSide = Math.min(Math.round(Math.min(innerWidth, innerHeight) * 0.72), 300);
+            // 2) contain：画面矩形不超出视口（留黑边是正常的，超出就是裁切了）
+            const contained = rect.w <= innerWidth + 1 && rect.h <= innerHeight + 1;
+
+            // 3) 框是居中的正方形
             const square = Math.abs(fr.width - fr.height) < 1;
-            const rightSize = Math.abs(fr.width - expectSide) <= 1;
-            const centred = Math.abs((fr.left + fr.width / 2) - innerWidth / 2) < 1
-                         && Math.abs((fr.top + fr.height / 2) - innerHeight / 2) < 1;
+            const centred = Math.abs((fr.left + fr.width / 2) - innerWidth / 2) < 1.5
+                         && Math.abs((fr.top + fr.height / 2) - innerHeight / 2) < 1.5;
 
-            // 3) 框在原生帧里占多大，必须落在 scanROI 之内
-            const scale = Math.max(innerWidth / vw, innerHeight / vh);
-            const frameInNative = fr.width / scale;
-            const covers = roi && roi.w + 0.5 >= frameInNative;
+            // 4) **框必须完全落在画面里**——上一版就是这里出的事
+            const picL = vr.left + (rect.left || 0), picT = vr.top + (rect.top || 0);
+            const picR = picL + (rect.w || 0), picB = picT + (rect.h || 0);
+            const insideFrame = fr.left >= picL - 1 && fr.top >= picT - 1
+                             && fr.right <= picR + 1 && fr.bottom <= picB + 1;
 
-            // scanROI 应为"屏幕上完整可见的最大正方形"换算回原生像素
-            const expectRoi = Math.min(Math.round(Math.min(innerWidth, innerHeight) / scale), Math.min(vw, vh));
+            // 边长应为画面短边的 62%，夹在 160~340
+            const expectSide = Math.max(160, Math.min(Math.round(Math.min(rect.w || 0, rect.h || 0) * 0.62), 340));
+            const rightSize = Math.abs(fr.width - expectSide) <= 2;
+
+            // 5) scanROI 必须是整幅原生帧
+            const roiFull = roi && roi.x === 0 && roi.y === 0 && roi.w === vw && roi.h === vh;
 
             r({ label, stream: vw + 'x' + vh,
-                fillsScreen, square, rightSize, centred,
+                fillsScreen, contained, insideFrame, square, centred, rightSize, roiFull,
                 frameSide: Math.round(fr.width),
-                frameInNative: Math.round(frameInNative),
-                roi: roi && Math.round(roi.w),
-                expectRoi,
-                roiOK: roi && Math.abs(roi.w - expectRoi) <= 2,
-                covers,
-                zoom: +(fr.width / frameInNative).toFixed(2) });
+                pic: Math.round(rect.w || 0) + 'x' + Math.round(rect.h || 0),
+                margin: Math.round(Math.min(
+                  (fr.left - picL), (fr.top - picT),
+                  (picR - fr.right), (picB - fr.bottom))) });
           }, 600));
       }
 
@@ -73,6 +79,7 @@ module.exports = async (page, { sleep }) => {
       results.square = await test(720, 720, 'square');
       results.vga = await test(640, 480, 'vga');
       results.hd = await test(1920, 1440, 'hd');
+      results.wide = await test(1920, 1080, 'wide');
       return results;
     })()`);
 

@@ -22,7 +22,39 @@ public final class ScanCore {
     }
 
     /**
-     * 解码一帧 NV21。
+     * 解码整幅一帧 NV21（当前手机端的用法）。
+     *
+     * 为什么解整幅而不是"取景框那一块"：画面现在是**整幅显示**的（contain，不裁不放大），
+     * 用户能看见画面四角的码，那就必须也去认那些码。
+     * 早先只裁中间一块解，等于把看得见的部分主动丢掉，表现出来就是
+     * "明明在画面里却怎么都对不上"。
+     *
+     * 整幅解比裁块解多花一点时间（1920x1080 约 2.7ms vs 1.2ms），
+     * 但这是"用户能看见就一定能认"的代价，值得。
+     *
+     * @param allowInvert 本次是否额外试一次反色（调用方按帧计数限流，
+     *                    因为反色要多解一遍，而深底亮码是少数情况）
+     */
+    public static String decodeWhole(MultiFormatReader reader, byte[] yuv, int w, int h,
+                                     boolean allowInvert) {
+        if (yuv == null || w <= 0 || h <= 0) return null;
+        try {
+            String r = decodeFull(reader, yuv, w, h);
+            if (r != null) return r;
+            if (allowInvert) {
+                // 深底亮码（深色屏幕、反光贴纸）：亮度直方图整个反过来了，
+                // ZXing 默认只认深码浅底，必须显式反色再解一遍。
+                return decodeFull(reader, invert(yuv, yuv.length), w, h);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            reader.reset();
+        }
+        return null;
+    }
+
+    /**
+     * 解码一帧 NV21（保留的裁块 + 整幅兜底版本）。
      *
      * **不做旋转。** QR 码的三个定位图形是旋转无关的，ZXing 会自己找出三个角并算仿射变换，
      * 所以无论这一帧是正的、倒的、还是躺 90 度，都能直接解。
@@ -88,8 +120,27 @@ public final class ScanCore {
         return null;
     }
 
-    /** 整幅解（兜底）。注意 PlanarYUVLuminanceSource 必须传真实的宽和高，不能取 min。 */
-    private static String decodeFull(MultiFormatReader reader, byte[] buf, int w, int h) {
+    /**
+     * 用一维灰度缓冲解一张图（整幅）。
+     *
+     * 拍照兜底那条路会先把 Bitmap 转成灰度再调这里 —— 转换留在 Activity 里做，
+     * 是为了让这个类保持**纯 Java**：它能脱离 Android 在普通 JVM 里跑，
+     * tools/ScanCoreTest.java 测的就是这段生产代码本身，不是抄的另一份。
+     */
+    public static String decodeGray(MultiFormatReader reader, byte[] gray, int w, int h) {
+        try {
+            LuminanceSource src = new PlanarYUVLuminanceSource(gray, w, h, 0, 0, w, h, false);
+            Result r = reader.decodeWithState(new BinaryBitmap(new HybridBinarizer(src)));
+            if (r != null && r.getText() != null) return r.getText();
+        } catch (com.google.zxing.NotFoundException nf) {
+            // 没有码，正常
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /** 整幅解。注意 PlanarYUVLuminanceSource 必须传真实的宽和高，不能取 min。 */
+    static String decodeFull(MultiFormatReader reader, byte[] buf, int w, int h) {
         try {
             LuminanceSource src = new PlanarYUVLuminanceSource(buf, w, h, 0, 0, w, h, false);
             Result r = reader.decodeWithState(new BinaryBitmap(new HybridBinarizer(src)));

@@ -143,11 +143,12 @@
 
 <!-- ============ 扫码覆盖层 ============ -->
 <div id="scanner" class="scanner hidden">
+  <video id="bgvideo" class="bg" playsinline muted autoplay></video>
   <video id="video" playsinline muted></video>
   <div class="scan-frame"><i></i><i></i><i></i><i></i></div>
   <div class="scanner-top">
     <button id="btnScannerClose" class="icon light">&times;</button>
-    <span>把二维码放进框内</span>
+    <span id="scanHint">把二维码对准取景框</span>
     <button id="btnTorch" class="icon light">☀︎</button>
   </div>
   <div class="scanner-bottom">

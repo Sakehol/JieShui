@@ -529,6 +529,13 @@ async function openScanner() {
   video.srcObject = stream;
   video.setAttribute('playsinline', 'true');
   await video.play().catch(() => {});
+  // 垫底的模糊背景用同一路流，只是铺满屏幕当氛围，不参与识别
+  const bg = $('#bgvideo');
+  if (bg) { bg.srcObject = stream; bg.play().catch(() => {}); }
+
+  // 点画面立即拍一张识别（远处小码时最管用）
+  video.onclick = () => { photoTick = 0; photoDelayMs = 1600; grabPhoto(); };
+  scanStartAt = performance.now();
 
   // 等第一帧出来才知道视频的真实宽高，布局要依赖它
   await new Promise(res => {
@@ -544,42 +551,51 @@ async function openScanner() {
   tickScan();
 }
 
-/* 取景框只是"给眼睛看的准星"，解码范围故意比它大一圈。
-   取景框是屏幕短边的 72%，解码取的是**屏幕上完整可见的最大正方形**
-   （短边 / cover 缩放比），后者一定把框整个包住，还多出四周一圈余量 ——
-   这是刻意的安全方向：**只会多认，不会少认**。
+/* 取景框的位置和大小按**视频画面在屏幕上的真实矩形**算，而且解码范围就是整幅画面。
 
-   为什么不干脆对齐成一样大？因为对齐之后识别距离会暴跌：
-   一个 280px 的框换算回原生像素只有 200 出头，而扫码距离完全由
-   "码在画面里占多少原生像素"决定（见 README 里的数据表）。
+   这里踩过的三个坑，都是"看到的不等于认的"造成的：
+   1) 全屏 cover + 解整幅压到 480：cover 把画面放大 3.85 倍，用户以为离得太近往后退，
+      越退码越小；而解码那边又把整幅缩到 480，远处的小码只剩十几个像素。
+   2) video 缩成小正方形只显示框内：不裁了，但框外全黑，看着像相机坏了。
+   3) contain + 固定尺寸方框：画面只占中间一条细带，方框比它还高，
+      框的上下落在黑边上 —— 用户照框去对，码其实出画面了。
 
-   之前踩过的坑，都是"看到的不等于认的"造成的：
-   1) 全屏 cover 但解的是整幅缩到 480：远处的小码在 480 里只剩十几个像素，认不出。
-   2) 把 video 缩成小方块只显示框内：框外全黑，用户以为相机坏了（已改回全屏）。
-   3) 全屏 contain + 固定方框：画面只占中间一条 219px 高的细带，
-      方框比它还高，框的上下落在黑边上 —— 用户照框去对，码其实出画面了。 */
+   现在的原则只有一条：**屏幕上能看见的，就是能被识别的**。
+   画面按原始比例整幅显示（不裁不放大），解码也取整幅，取景框只是画在画面中央的准星，
+   尺寸严格按画面矩形的短边算，不可能超出画面。 */
 function layoutScanFrame() {
   const video = $('#video');
   if (!video) return;
-  const side = Math.min(Math.round(Math.min(innerWidth, innerHeight) * 0.72), 300);
-  document.documentElement.style.setProperty('--scan-side', side + 'px');
-
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) { scanROI = null; return; }
 
-  // 与 CSS 的 object-fit:cover 完全同一套几何：取较大的缩放比，画面铺满屏幕、多出来的裁掉
-  const scale = Math.max(innerWidth / vw, innerHeight / vh);
-  // 屏幕上完整可见的最大正方形，换算回原生像素
-  let roiSide = Math.round(Math.min(innerWidth, innerHeight) / scale);
-  roiSide = Math.max(1, Math.min(roiSide, Math.min(vw, vh)));
-  scanROI = {
-    x: Math.round((vw - roiSide) / 2),
-    y: Math.round((vh - roiSide) / 2),
-    w: roiSide, h: roiSide
-  };
-  // scanROI 是模块级 let，不会挂到 window 上，回归脚本读不到。
-  // 这里额外暴露一份只读的副本，纯粹给 tools/flow_frame2.js 断言用。
-  window.__scanROI = scanROI;
+  // object-fit:contain 之后，画面在屏幕上的实际矩形（可能上下或左右留黑边）
+  const boxW = video.clientWidth || innerWidth;
+  const boxH = video.clientHeight || innerHeight;
+  const scale = Math.min(boxW / vw, boxH / vh);
+  const dw = vw * scale, dh = vh * scale;
+  const left = (boxW - dw) / 2, top = (boxH - dh) / 2;   // 相对 video 元素
+
+  // 准星：画面短边的 62%，再夹在 160~340 之间。
+  // 只做视觉引导，不参与裁剪，所以不需要和任何解码区域对齐。
+  const side = Math.max(160, Math.min(Math.round(Math.min(dw, dh) * 0.62), 340));
+  const fr = $('.scan-frame');
+  if (fr) {
+    const vr = video.getBoundingClientRect();
+    fr.style.width = side + 'px';
+    fr.style.height = side + 'px';
+    fr.style.left = (vr.left + left + (dw - side) / 2) + 'px';
+    fr.style.top = (vr.top + top + (dh - side) / 2) + 'px';
+    fr.style.transform = 'none';
+  }
+
+  // 解码范围 = 整幅原生帧。既然画面是整幅显示的，就没有任何理由只解中间一块：
+  // 只解中间等于把画面四角能看见的码主动丢掉。
+  scanROI = { x: 0, y: 0, w: vw, h: vh };
+  window.__scanROI = scanROI;   // 仅供 tools/flow_frame2.js 断言
+
+  // 记下画面矩形，兜底拍照时要用它把码的位置映射回原生像素
+  window.__scanRect = { left: left, top: top, w: dw, h: dh, vw: vw, vh: vh };
 }
 let scanROI = null;
 
@@ -624,7 +640,7 @@ async function tickScan() {
   frameNo++;
   // 慢机自动降频：单次解码超过这个预算就每两帧才跑一次，
   // 免得把 rAF 拖死、预览卡成幻灯片（低端安卓上实测会到 50ms+）。
-  const every = scanCost > 25 ? 2 : 1;
+  const every = scanCost > 35 ? 2 : 1;
   if (every > 1 && frameNo % every !== 0) {
     rafId = requestAnimationFrame(tickScan);
     return;
@@ -635,105 +651,179 @@ async function tickScan() {
     const vw = video.videoWidth, vh = video.videoHeight;
     if (vw && vh) {
       // 有些机型会在预览过程中切换分辨率（对焦完成、切广角），
-      // 这时引导框和 ROI 就失效了，跟着重算一次。
+      // 这时取景框的屏幕坐标就失效了，跟着重算一次。
       if (vw !== tickScan._vw || vh !== tickScan._vh) {
         tickScan._vw = vw; tickScan._vh = vh;
         layoutScanFrame();
       }
-      const cv = tickScan._cv || (tickScan._cv = document.createElement('canvas'));
-      const ctx = cv.getContext('2d', { willReadFrequently: true });
-      let code = null;
+      const text = await decodeFrom(video, vw, vh, false);
+      if (maybeHit(text)) return;
 
-      // 第 0 遍：原生 BarcodeDetector（安卓 Chrome 有）。
-      // 它直接在 video 元素上解，连 canvas 都不用画，通常 1~3ms 就出结果，
-      // 而且对运动模糊、倾斜、低对比的容忍度远好于纯 JS 的 jsQR。
-      // 用到了就直接收工，省掉后面两遍。
-      const det = getDetector();
-      if (det && det.detect) {
-        try {
-          const hits = await det.detect(video);
-          if (!scanning) return;
-          if (hits && hits.length && hits[0].rawValue) code = { data: hits[0].rawValue };
-        } catch (_) { /* 某些机型 detect 会抛，忽略，退回 jsQR */ }
-      }
-      if (code && code.data) {
-        closeScanner();
-        if (navigator.vibrate) navigator.vibrate(40);
-        handleScanned(code.data);
-        return;
-      }
-
-      // 第一遍：中心正方形那块原生像素（scanROI），**不放大**。
-      // 这一遍是主力：取景框一直居中，框里的码一定落在这块里，反过来还多兜一圈框外。
-      //
-      // 实测二维码在画面里只占 10%（约 72px）时，整幅压到 720 认不出，
-      // 直接取原生像素能认出；而把 720 再放大到 960 只是插值，救不回来还更慢
-      // （960 要 15.7ms，原生 ROI 只要 12.2ms）。所以这里保持原始像素密度。
-      //
-      // 上限 1080：jsQR 的耗时随面积增长，1440 的 ROI 要 30~40ms/帧，
-      // 而实测把 1440 缩到 1080 解，识别力和原生基本一样。
-      //
-      // 这一遍**不做反色**：attemptBoth 要多花约 40% 的时间（flow_perf.js：
-      // 720 单遍 6.8ms、两遍 9.5ms），而绝大多数码是深码浅底的，
-      // 把它挪到兜底那一遍（每 3 帧一次）才划算。
-      if (scanROI) {
-        const r = scanROI;
-        const sc = Math.min(1, 1080 / Math.max(r.w, r.h));
-        const w = Math.round(r.w * sc), h = Math.round(r.h * sc);
-        cv.width = w; cv.height = h;
-        ctx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, w, h);
-        code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
-      }
-
-      // 第二遍（兜底，每 3 帧一次）：先整幅压到 720，再对中心块反色试一遍。
-      //   - 整幅：码很大、超出取景窗，或者手一歪把码带到框外时靠它救回来；
-      //   - 反色：深底亮码的屏幕和反光贴纸，亮度直方图整个反过来了，
-      //     jsQR 默认只认深码浅底，不反色就永远认不出。
-      if (!code && frameNo % 3 === 0) {
-        const sc = Math.min(1, 720 / Math.max(vw, vh));
-        const w = Math.round(vw * sc), h = Math.round(vh * sc);
-        cv.width = w; cv.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
-
-        if (!code && scanROI) {
-          const r = scanROI;
-          const sc2 = Math.min(1, 1080 / Math.max(r.w, r.h));
-          const w2 = Math.round(r.w * sc2), h2 = Math.round(r.h * sc2);
-          cv.width = w2; cv.height = h2;
-          ctx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, w2, h2);
-          // 这里必须用 invertFirst，不能用 onlyInvert：
-          // jsQR 的 onlyInvert 会走 `scan(inverted)`，但 inverted 只在
-          // shouldInvert（attemptBoth / invertFirst）为真时才由 binarize 产出，
-          // 用 onlyInvert 拿到的是 undefined，直接抛
-          // "Cannot read properties of undefined (reading 'height')"。
-          code = window.jsQR(ctx.getImageData(0, 0, w2, h2).data, w2, h2, { inversionAttempts: 'invertFirst' });
-        }
-      }
-
-      if (code && code.data) {
-        closeScanner();
-        if (navigator.vibrate) navigator.vibrate(40);
-        handleScanned(code.data);
-        return;
+      // 连续预览扫了几秒还没结果 → 拍一张全分辨率照片再认。
+      // 这是"远处 / 小码 / 有点糊"时真正管用的那一招，靠调预览参数是救不回来的。
+      if (scanning && performance.now() - scanStartAt > photoDelayMs) {
+        scanStartAt = performance.now();
+        grabPhoto();
       }
     }
     const dt = performance.now() - t0;
     scanCost = scanCost ? scanCost * 0.8 + dt * 0.2 : dt;
 
     // 低端机保护：请求 1920x1440 之后，如果解码长期跟不上（老机型预览会卡），
-    // 主动把摄像头降到 1280x720 —— 宁可少认一点点，也不能让取景窗卡成幻灯片。
+    // 主动把摄像头降到 1280x720 —— 宁可少认一点点，也不能让预览卡成幻灯片。
     // 只降一次，降完不再回弹，避免反复抖动。
     scanTickCost++;
-    if (!scanDowngraded && scanTickCost > 60 && scanCost > 45) {
+    if (!scanDowngraded && scanTickCost > 60 && scanCost > 60) {
       scanDowngraded = true;
       const tr = stream && stream.getVideoTracks()[0];
       if (tr) {
         try { await tr.applyConstraints({ width: { ideal: 1280 }, height: { ideal: 720 } }); } catch (_) { }
+        photoDelayMs = 3000;   // 降了分辨率就更依赖拍照兜底，早点触发
       }
     }
   }
   rafId = requestAnimationFrame(tickScan);
+}
+
+/* 从一个可绘制源（video 或 ImageBitmap）解一帧。
+   分两档尺度：先 720（快，绝大多数情况够），再 1280（远处小码靠这档，隔帧跑）。
+
+   为什么不只解"取景框那一块"：因为画面现在整幅显示（不裁不放大），
+   框只是画在中间的准星。只解中间等于把画面四角能看见的码主动丢掉 ——
+   而用户看到那里有码，就会觉得"明明在画面里却扫不出来"。 */
+async function decodeFrom(src, srcW, srcH, deep) {
+  // 第 0 遍：原生 BarcodeDetector（安卓 Chrome 有）。
+  // 它直接解原始画面、不用画 canvas，通常 1~3ms 出结果，
+  // 而且对运动模糊、倾斜、低对比的容忍度远好于纯 JS 的 jsQR。
+  const det = getDetector();
+  if (det && det.detect) {
+    try {
+      const hits = await det.detect(src);
+      if (!scanning) return null;
+      if (hits && hits.length && hits[0].rawValue) return hits[0].rawValue;
+    } catch (_) { /* 某些机型 detect 会抛，忽略，退回 jsQR */ }
+  }
+
+  const cv = tickScan._cv || (tickScan._cv = document.createElement('canvas'));
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  // 反色（深底亮码）很贵，只在少数帧上试。invertFirst 而不是 onlyInvert：
+  // jsQR 的 inverted 矩阵只在 shouldInvert（attemptBoth / invertFirst）为真时
+  // 才由 binarize 产出，用 onlyInvert 拿到的是 undefined，直接抛
+  // "Cannot read properties of undefined (reading 'height')"。
+  const inv = deep || frameNo % 4 === 0 ? 'invertFirst' : 'dontInvert';
+
+  const passes = deep ? [1600, 1100, 720] : [720, 1280];
+  for (let i = 0; i < passes.length; i++) {
+    if (!deep && i === 1 && frameNo % 2 !== 0) break;   // 大档隔帧
+    const cap = passes[i];
+    const sc = Math.min(1, cap / Math.max(srcW, srcH));
+    const w = Math.max(1, Math.round(srcW * sc)), h = Math.max(1, Math.round(srcH * sc));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    ctx.drawImage(src, 0, 0, w, h);
+    const code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: inv });
+    if (code && code.data) return code.data;
+  }
+  return null;
+}
+
+function maybeHit(text) {
+  if (!text) return false;
+  closeScanner();
+  if (navigator.vibrate) navigator.vibrate(40);
+  handleScanned(text);
+  return true;
+}
+
+function setScanHint(t) {
+  const el = $('#scanHint');
+  if (el && el.textContent !== t) el.textContent = t;
+}
+
+/* ---------------- 全分辨率拍照兜底 ----------------
+
+   连续预览识别有两个天花板，靠调参数解决不了：
+
+   1) 摄像头流的分辨率有限（多数安卓网页给到 1920x1440 就到顶），
+      而"能扫多远"完全由码在画面里占多少像素决定。码占 8% 时，
+      在 1440 的流里只有 115px，25 个模块摊下来 4.6px/模块 —— 非常勉强。
+   2) 预览还要走对焦、压缩、跨进程传输，抖动和糊都会被放大。
+
+   真正可靠的做法和系统相机一样：**拍一张全分辨率静态照片**再识别。
+   同一个镜头，照片能到 4000x3000，比预览流多一个数量级的像素，
+   识别距离是预览的好几倍，而且不受帧率限制，可以慢慢试多种尺度。
+
+   所以：连续预览只负责"近处快扫"，几秒没结果就自动拍一张；
+   用户也可以随时点画面手动触发。 */
+let photoBusy = false, photoTick = 0, photoDelayMs = 2200;
+let scanStartAt = 0;
+
+async function grabPhoto() {
+  if (!stream || photoBusy || !scanning) return;
+  photoBusy = true;
+  try {
+    let bmp = null;
+    const track = stream.getVideoTracks()[0];
+
+    // 首选 ImageCapture：拿的是传感器全分辨率静态图，比预览帧大一个数量级。
+    if (typeof window.ImageCapture === 'function' && track) {
+      try {
+        const ic = new window.ImageCapture(track);
+        const blob = await ic.takePhoto();
+        if (blob) bmp = await createImageBitmap(blob);
+      } catch (_) { bmp = null; }
+    }
+
+    // 退路：把 video 的原生像素整幅画到 canvas（不缩放）
+    if (!bmp) {
+      const v = $('#video');
+      if (v && v.videoWidth) bmp = await createImageBitmap(v).catch(() => null);
+    }
+    if (!bmp) return;
+
+    const text = await decodeBitmapDeep(bmp);
+    if (bmp.close) bmp.close();
+    if (text) { maybeHit(text); return; }
+
+    photoTick++;
+    photoDelayMs = Math.min(1600 + photoTick * 700, 5000);
+    if (scanning) setScanHint('没认出来，把二维码再靠近点，或点一下画面');
+  } catch (_) {
+    /* 拍照失败不影响预览继续扫 */
+  } finally {
+    photoBusy = false;
+  }
+}
+
+/* 深度解码一张静态图：多尺度 × 两种极性。
+   这里可以放心地慢 —— 一秒解一张照片，比一秒解 30 帧预览有用得多。 */
+async function decodeBitmapDeep(bmp) {
+  const det = getDetector();
+  if (det && det.detect) {
+    try {
+      const hits = await det.detect(bmp);
+      if (hits && hits.length && hits[0].rawValue) return hits[0].rawValue;
+    } catch (_) { }
+  }
+  const cv = document.createElement('canvas');
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const long = Math.max(bmp.width, bmp.height);
+  const scales = [];
+  for (const cap of [2400, 1500, 1000, 700]) {
+    const sc = Math.min(1, cap / long);
+    if (!scales.some(s => Math.abs(s - sc) < 0.02)) scales.push(sc);
+  }
+  for (const sc of scales) {
+    const w = Math.max(1, Math.round(bmp.width * sc));
+    const h = Math.max(1, Math.round(bmp.height * sc));
+    cv.width = w; cv.height = h;
+    ctx.drawImage(bmp, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    for (const inv of ['dontInvert', 'invertFirst']) {
+      const code = window.jsQR(data, w, h, { inversionAttempts: inv });
+      if (code && code.data) return code.data;
+    }
+  }
+  return null;
 }
 
 async function toggleTorch() {

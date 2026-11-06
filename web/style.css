@@ -150,21 +150,31 @@ h1,h2,h3{margin:0;font-weight:650;letter-spacing:.2px}
 .ok{width:62px;height:62px;border-radius:50%;background:rgba(46,204,143,.15);color:var(--ok);display:grid;place-items:center;font-size:30px}
 
 /* ---------- 扫码 ---------- */
-.scanner{position:fixed;inset:0;background:#000;z-index:50;overflow:hidden}
-/* 预览铺满整屏（cover），取景框是叠在上面的一层「挖了个方洞的暗罩」。
-   早先试过把 video 本身缩成一个小正方形，好处是"框里看到的像素 == 解的那块"，
-   但框外全是纯黑，看着像相机坏了。现在改成业界通用的样子：画面全屏、
-   框外用暗罩压暗，视觉上能看见周围环境，也知道该把码往哪儿放。
+.scanner{position:fixed;inset:0;background:#000;z-index:50;overflow:hidden;
+  display:flex;align-items:center;justify-content:center}
 
-   代价是 cover 会把画面放大（竖屏 9:19.5 上拿 16:9 的流，横向只露出约 26%）。
-   这部分靠两件事抵消：一是优先要 4:3 的流（露出比例从 26% 提到约 35%，且不做上采样），
-   二是解码范围取的是**原生帧中心正方形**，比框里能看见的区域更大，
-   所以框里出现的码一定能被解到 —— 只会多认，不会少认。 */
-.scanner video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
-.scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-  width:var(--scan-side,min(72vw,300px));height:var(--scan-side,min(72vw,300px));
-  border-radius:20px;
-  box-shadow:0 0 0 100vmax rgba(0,0,0,.62), inset 0 0 0 1px rgba(255,255,255,.18)}
+/* 预览：**整幅画面完整可见，一像素都不裁、不放大**。
+   这里走过不少弯路，记下来免得再犯：
+
+   1) 最早用 cover + 16:9 的流。竖屏 9:19.5 的容器里，cover 横向只露出约 26%，
+      等效放大 3.85 倍 —— 用户的第一反应是"相机自己放大了，我得往后退"，
+      越退码越小，越扫不上。这是"扫不上"最主要的人为原因。
+   2) 后来把 video 缩成一个正方形小方块。确实不裁了，但框外全黑，
+      看着像相机坏了，而且能看到的范围只剩中间一小块。
+   3) 现在是"按流的原始比例整幅显示"：整幅画面完整可见，既不裁也不压。
+      你看到的就是相机拍到的全部，不存在"看到的只是局部"。
+
+   配合 app.js 的解码策略：解的也是**整幅**，所以看得见的任何一个像素都在识别范围内。 */
+.scanner video{position:absolute;inset:0;width:100%;height:100%;
+  object-fit:contain;background:transparent;z-index:1}
+/* 垫底的模糊背景：同一路流，铺满屏幕 + 模糊 + 压暗。
+   纯粹是观感，让留白不是死黑，也不参与任何识别。 */
+.scanner .bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  filter:blur(28px) saturate(.7) brightness(.38);transform:scale(1.12);z-index:0}
+/* 取景框是**叠在视频画面上**的准星，位置和大小由 layoutScanFrame() 按视频实际屏幕矩形算出来，
+   保证它一定完全落在画面里，不会像上一版那样"框比画面还高"。 */
+.scan-frame{position:absolute;z-index:2;border-radius:16px;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.45)}
 .scan-frame i{position:absolute;width:26px;height:26px;border:3px solid #fff;border-radius:4px}
 .scan-frame i:nth-child(1){top:-2px;left:-2px;border-right:0;border-bottom:0}
 .scan-frame i:nth-child(2){top:-2px;right:-2px;border-left:0;border-bottom:0}

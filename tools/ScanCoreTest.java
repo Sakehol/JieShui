@@ -305,12 +305,62 @@ public class ScanCoreTest {
         System.out.println();
     }
 
+    /**
+     * 6) 整幅解 vs 只解中间一块。
+     *
+     * 这是本轮改动的核心主张：画面现在是整幅显示的（contain），
+     * 用户能看见画面四角的码 —— 那就必须也认那些码。
+     * 旧实现只裁中间一块解，四角的码永远认不到，
+     * 表现就是"明明在画面里，怎么对都对不上"。
+     */
+    static void testWholeFrame() {
+        System.out.println("== 6. whole frame vs center crop ==");
+        int w = 1280, h = 960;
+        int roi = 587;                       // 旧实现会裁出来的中心块
+        int[][] q = qrGray(900);
+
+        // 把码贴在右上角：完全落在画面内，但完全落在中心块之外
+        int codePx = 300;
+        byte[] corner = frame(w, h);
+        for (int i = 0; i < corner.length; i++) corner[i] = (byte) 240;
+        int cx = w - codePx / 2 - 40, cy = codePx / 2 + 40;
+        stamp(corner, w, h, q[0], 900, codePx, cx, cy);
+
+        String whole = ScanCore.decodeWhole(newReader(), corner, w, h, false);
+        String cropped = ScanCore.decode(newReader(), corner, w, h, roi, false);
+        System.out.println("   code at top-right corner:"
+                + "  whole -> " + (whole != null ? "OK" : "MISS")
+                + "   center crop -> " + (cropped != null ? "OK" : "MISS"));
+        check("whole-frame decode finds a corner code", whole != null);
+        check("center-crop alone would have missed it", cropped == null);
+
+        // 整幅解不能比裁块解更差：画面正中的码，两边都该认得出
+        byte[] middle = frame(w, h);
+        for (int i = 0; i < middle.length; i++) middle[i] = (byte) 240;
+        stamp(middle, w, h, q[0], 900, 420, w / 2, h / 2);
+        check("center code still decodes whole-frame",
+                ScanCore.decodeWhole(newReader(), middle, w, h, false) != null);
+
+        // 每帧成本：整幅 vs 裁块（整幅贵一点，但换来"看得见就认得出"）
+        int[] big = new int[1920 * 1080];
+        for (int i = 0; i < big.length; i++) big[i] = 200;
+        byte[] bigFrame = new byte[1920 * 1080];
+        for (int i = 0; i < bigFrame.length; i++) bigFrame[i] = (byte) (big[i]);
+        long t0 = System.nanoTime();
+        for (int i = 0; i < 5; i++) ScanCore.decodeWhole(newReader(), bigFrame, 1920, 1080, false);
+        long wholeMs = (System.nanoTime() - t0) / 5_000_000;
+        System.out.println("   per-frame 1920x1080: whole " + wholeMs + " ms");
+        check("whole-frame decode stays under 8ms", wholeMs < 8);
+        System.out.println();
+    }
+
     public static void main(String[] a) {
         testRotation();
         testDistance();
         testFallback();
         testCost();
         testInverted();
+        testWholeFrame();
         System.out.println(fails == 0 ? "ALL PASS" : (fails + " FAILED"));
         if (fails != 0) System.exit(1);
     }
