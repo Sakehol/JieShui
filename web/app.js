@@ -1292,6 +1292,10 @@ async function startWater() {
 
     let last = null, ticks = 0, userStopped = false;
     let seenRunning = false, waitTicks = 0, netFailed = false, machineEnded = false;
+    // 机器被解锁后 workStatus 就已经是 2 了，但那时用户还没按「开始」，一滴水都没出。
+    // 所以还得单独记一个「解锁过」的标记，用来区分「解锁后一直没出水就结束」。
+    let sawActive = false;
+    let waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
     // 约 90 秒等用户按机器上的开始。测试里可以用 window.__startWaitTicks 缩短。
     const START_WAIT_TICKS = window.__startWaitTicks || 75;
     while (true) {
@@ -1318,36 +1322,41 @@ async function startWater() {
       }
       last = sync || {};
       const ws = last.workStatus;
-      const running = ws === WORK_RUNNING;
+      const active = ws === WORK_RUNNING;
       // sync.amount 不是金额，官方正是用它判断"这次有没有消费"——0 表示一滴水都没出。
-      // 用它而不是只看 workStatus：用户按「开始」后马上按「结算」时，
-      // 两次轮询之间可能整个 2→3 都过去了，只看 workStatus 会把这次真实消费当成没接水。
-      //
-      // 注意 identify 必须用 falsy 判断，不能写 !!(last.identify) 之外的"非空字符串"判断：
-      // 服务端没出过水时这个字段可能是空串、也可能是 null。写成 `last.identify !== ''`
-      // 就会把 null 也当成"有值"，于是把一滴水没接的一次当成接了水去建单。
+      // 这是唯一能确认「水真的出来了」的信号：workStatus=2 只代表机器被解锁
+      // （屏幕上写的是「设备已解锁 (6)秒 / 轻触【开始】键出水」），用户不按开始
+      // 它也是 2，所以绝不能拿它当"正在出水"。
       const consumed = Number(last.amount) > 0 || !!last.identify;
-      if (running) {
-        if (!seenRunning) {
-          seenRunning = true;
-          watering = true;
-          setState('接水中', '水已开，正在计量');
-          setRing(12);
-          btn.textContent = '结束接水';
-          btn.disabled = false;
+      if (consumed && !seenRunning) {
+        // 第一次看到有消费 = 用户按了机器上的开始，水真的出来了
+        seenRunning = true;
+        watering = true;
+        setState('接水中', '水已开，正在计量');
+        setRing(12);
+        btn.textContent = '结束接水';
+        btn.disabled = false;
+      }
+      if (seenRunning && active) {
+        waterTicks++;
+        $('#flowAmount').textContent = fmtElapsed(waterTicks * 1.2);
+        setRing(Math.min(95, 12 + waterTicks * 3));
+      } else if (!seenRunning) {
+        // 还没出水，这一轮仍在等用户按「开始」
+        if (active) { setState('已就绪', '请在机器上按「开始」'); sawActive = true; }
+        else if (sawActive) {
+          // 解锁过（屏幕显示「设备已解锁」），但一直没按开始，然后机器自己收口了
+          machineEnded = true;
+          break;
+        } else if (ws !== WORK_IDLE) {
+          // 从头到尾没解锁：unlock 没生效，或者在别的机器上结束了
+          machineEnded = true;
+          break;
         }
-        $('#flowAmount').textContent = fmtElapsed(ticks * 1.2);
-        setRing(Math.min(95, 12 + ticks * 3));
-      } else if (seenRunning || consumed) {
-        break;                        // 确实接了水，进入结算
-      } else if (ws !== WORK_IDLE) {
-        // 扫完码一滴水都没接，直接在机器上点了「结算」——机器会离开空闲态。
-        // 以前这里只认 consumed，于是这种情况要干等约 90 秒，
-        // 最后还告诉用户「没有在机器上按开始」，但他明明按了结算。
-        machineEnded = true;
+        if (++waitTicks > START_WAIT_TICKS) break;
+      } else {
+        // 出过水，现在 active 变 false = 机器上点结算了
         break;
-      } else if (++waitTicks > START_WAIT_TICKS) {
-        break;                        // 一直没开始，放弃这次
       }
       if (ticks > 600) break;
     }

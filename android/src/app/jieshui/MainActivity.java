@@ -1204,6 +1204,10 @@ public class MainActivity extends Activity {
                 boolean seenRunning = false;
                 boolean machineEnded = false;
                 int waitTicks = 0;
+                // 机器被解锁后 workStatus 就已经是 2 了，但那时用户还没按「开始」，一滴水都没出。
+                // 所以还得单独记一个「解锁过」的标记，用来区分「解锁后一直没出水就结束」。
+                boolean sawActive = false;
+                int waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
                 final int START_WAIT_TICKS = 75;   // 约 90 秒等用户按机器上的开始
                 while (true) {
                     if (stopRequested) {
@@ -1250,42 +1254,52 @@ public class MainActivity extends Activity {
                     if (sync == null) break;
                     last = sync;
                     int ws = sync.optInt("workStatus", 0);
-                    boolean isRunning = ws == Api.WORK_RUNNING;
-                    if (isRunning) {
-                        if (!seenRunning) {
-                            seenRunning = true;
-                            watering = true;
-                            ui.post(() -> {
-                                stateTitle.setText("接水中");
-                                stateSub.setText("水已开，正在计量");
-                                ring.setPct(0.12f);
-                                if (actionBtn != null) actionBtn.setText("结束接水");
-                            });
-                        }
-                        final int fticks = ticks;
+                    boolean active = ws == Api.WORK_RUNNING;
+                    // sync.amount 不是金额，官方正是用它判断"这次有没有消费"——0 水都没出。
+                    // 这是唯一能确认「水真的出来了」的信号：workStatus=2 只代表机器被解锁
+                    // （机器屏幕上写的是「设备已解锁 (6)秒 / 轻触【开始】键出水」），
+                    // 用户不按开始它也是 2，所以绝不能拿它当"正在出水"。
+                    boolean consumed = !str(sync, "identify").isEmpty()
+                            || numOf(sync.optString("amount", "0")) > 0;
+                    if (consumed && !seenRunning) {
+                        // 第一次看到有消费 = 用户按了机器上的「开始」，水真的出来了
+                        seenRunning = true;
+                        watering = true;
                         ui.post(() -> {
-                            // sync.amount 不是金额（官方只用它判断"有没有消费"），显示已接时长
+                            stateTitle.setText("接水中");
+                            stateSub.setText("水已开，正在计量");
+                            ring.setPct(0.12f);
+                            if (actionBtn != null) actionBtn.setText("结束接水");
+                        });
+                    }
+                    if (seenRunning && active) {
+                        waterTicks++;
+                        final int fticks = waterTicks;
+                        ui.post(() -> {
+                            // 暂停也算暂停，只在真正出水时段计数
                             flowAmount.setText(fmtElapsed(fticks * 1.2));
                             ring.setPct(Math.min(0.95f, 0.12f + fticks * 0.03f));
                         });
                     } else if (!seenRunning) {
-                        // sync.amount 不是金额，官方正是用它判断"这次有没有消费"。
-                        // 用户按了「开始」又很快按「结算」时，两次轮询之间整个 2→3
-                        // 可能都过去了，只盯 workStatus 会把这次真实消费当成没接水，
-                        // 然后干等 90 秒才放弃 —— 网页端早就补了这个判断，APK 漏了。
-                        boolean spent = sync != null && (numOf(sync.optString("amount", "0")) > 0
-                                || !str(sync, "identify").isEmpty());
-                        if (spent) break;
-                        // 扫完码一滴水都没接，直接在机器上点了「结算」：机器会离开空闲态
-                        // （workStatus 不再是 0）。以前这里只认 spent，于是这种情况要干等
-                        // 90 秒，最后还告诉用户「没有在机器上按开始」—— 但他明明按了结算。
-                        // 用「离开了空闲态」而不是死认某个具体值，是怕不同机型终态不一样。
-                        if (ws != Api.WORK_IDLE) {
+                        // 还没出水：这一轮仍在等用户在机器上按「开始」
+                        if (active) {
+                            sawActive = true;
+                            ui.post(() -> {
+                                stateTitle.setText("已就绪");
+                                stateSub.setText("请在机器上按「开始」");
+                            });
+                        } else if (sawActive) {
+                            // 解锁过（屏幕显示「设备已解锁」），但一直没按开始，机器自己收口了
+                            machineEnded = true;
+                            break;
+                        } else if (ws != Api.WORK_IDLE) {
+                            // 从头到尾没解锁：unlock 没生效，或在别的机器上结束了
                             machineEnded = true;
                             break;
                         }
                         if (++waitTicks > START_WAIT_TICKS) break;
                     } else {
+                        // 出过水，现在 active 变 false = 机器上点结算了
                         break;
                     }
                     if (ticks > 900) break;

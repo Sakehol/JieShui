@@ -41,10 +41,12 @@ MOCK_BLOCK = r'''
                 return "{\"code\":0,\"data\":{\"msgId\":\"m1\",\"orderNo\":\"0620261106004023612291\"}}";
             case "goods/water/sync":
                 mockSyncTicks++;
-                // 前 2 次模拟"用户还没在机器上按开始"：扫码即开阀之后要等用户按开始，
-                // 这段时间 workStatus 不是 2、amount 是 0，不能急着去结算。
+                // 前 2 次模拟"机器已解锁（屏幕显示「设备已解锁 N 秒 / 轻触【开始】键出水」），
+                // 但用户还没按开始"：这时 workStatus 就已经是 2 了，可 amount 还是 0、
+                // identify 还是空。以前这里写 workStatus:0，于是"把 2 当成正在出水"这个
+                // bug 在模拟器上根本照不出来 —— 一开阀就显示「接水中」。
                 if (mockSyncTicks <= 2) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":0,\"identify\":\"\",\"amount\":\"0\",\"status\":0}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"\",\"amount\":\"0\",\"status\":0}}";
                 }
                 if (mockSyncTicks < 6) {
                     return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"" + (60 * mockSyncTicks) + "\",\"status\":1}}";

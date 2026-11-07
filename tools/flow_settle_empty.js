@@ -13,7 +13,7 @@ const shot = (name) => path.join(SHOTS, name);
 //    判定为"接过水" → 去建订单 → 建不出来 → 显示「订单没有生成成功」。
 //    APK 侧更狠：org.json 的 optString 会把 JSON null 转成字符串 "null"，
 //    于是连 "null".isEmpty() 都是 false，还把这个 "null" 当订单号显示。
-// 2) 机器上按了结算（workStatus 离开空闲态）但没出水时，旧代码不认这个信号，
+// 2) 机器上按了结算（workStatus 离开 2）但没出水时，旧代码不认这个信号，
 //    要干等约 90 秒，最后说「没有在机器上按开始」——用户明明按了结算。
 //
 // 这个用例要求：立刻结束等待、文案说清「机器上已结算，本次没有出水」、
@@ -47,7 +47,9 @@ const MOCK = `
       await new Promise(r=>setTimeout(r,80));
       // 关键：identify 是真正的 JSON null，不是空串 —— 服务端没出水时就是这样。
       // 机器在用户按下「结算」后从 0 变成 3。
-      if (!window.__settleAt) return J({workStatus:0, identify:null, amount:'0', status:0});
+      // 真机解锁后 workStatus 就已经是 2（屏幕写「设备已解锁 / 轻触【开始】键出水」），
+      // 但没出水时 amount 仍是 0、identify 仍是 JSON null。这才是"扫码后没接水"的真实帧。
+      if (!window.__settleAt) return J({workStatus:2, identify:null, amount:'0', status:0});
       return J({workStatus:3, identify:null, amount:'0', status:2});
     }
     if (p in D) {

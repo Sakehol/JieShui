@@ -38,7 +38,8 @@ const MOCK = `
     if (path === 'goods/water/sync') {
       if (o.syncExpire) return E(2, '未登录');
       await new Promise(r=>setTimeout(r,60));
-      if (!window.__pressAt) return J({workStatus:0, identify:'', amount:'0', status:0});
+      // 解锁后 workStatus 就是 2 了，只是 amount 还是 0（用户没按开始、没出水）
+      if (!window.__pressAt) return J({workStatus:2, identify:'', amount:'0', status:0});
       if (!window.__settleAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:'120', status:1});
       return J({workStatus:3, identify:'IDENTIFY_A', amount:'186', status:2});
     }
