@@ -46,7 +46,7 @@ MOCK_BLOCK = r'''
                 // identify 还是空。以前这里写 workStatus:0，于是"把 2 当成正在出水"这个
                 // bug 在模拟器上根本照不出来 —— 一开阀就显示「接水中」。
                 if (mockSyncTicks <= 2) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"\",\"amount\":\"0\",\"status\":0}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":0}}";
                 }
                 if (mockSyncTicks < 6) {
                     return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"" + (60 * mockSyncTicks) + "\",\"status\":1}}";

@@ -50,7 +50,10 @@ const MOCK = `
         // 真机解锁后 workStatus 就已经是 2 了（屏幕显示「设备已解锁 (6)秒 / 轻触【开始】键出水」），
         // 但用户没按开始，所以 amount 还是 0、identify 还是空。以前 mock 写的是 0，
         // 于是「把 2 当成正在出水」这个 bug 在测试里根本照不出来。
-        data = {workStatus:2, identify:'', amount:'0', status:0};     // 已解锁，等用户按开始
+        //
+        // identify 也别给值：它是解锁时就下来的"建单凭据"，真机上扫码瞬间就有。
+        // 早期版本拿 identify 当出水信号，结果「已就绪」只维持一次轮询就跳成「接水中」。
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:0};   // 已解锁，等用户按开始
       } else if (!window.__finishAt) {
         data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:1};
       } else {

@@ -1296,6 +1296,8 @@ async function startWater() {
     // 所以还得单独记一个「解锁过」的标记，用来区分「解锁后一直没出水就结束」。
     let sawActive = false;
     let waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
+    // 解锁那一刻 sync.amount 的基线值。之后只有比它大才算"出水了"。
+    let baseAmount = null;
     // 约 90 秒等用户按机器上的开始。测试里可以用 window.__startWaitTicks 缩短。
     const START_WAIT_TICKS = window.__startWaitTicks || 75;
     while (true) {
@@ -1323,11 +1325,17 @@ async function startWater() {
       last = sync || {};
       const ws = last.workStatus;
       const active = ws === WORK_RUNNING;
-      // sync.amount 不是金额，官方正是用它判断"这次有没有消费"——0 表示一滴水都没出。
-      // 这是唯一能确认「水真的出来了」的信号：workStatus=2 只代表机器被解锁
-      // （屏幕上写的是「设备已解锁 (6)秒 / 轻触【开始】键出水」），用户不按开始
-      // 它也是 2，所以绝不能拿它当"正在出水"。
-      const consumed = Number(last.amount) > 0 || !!last.identify;
+      // ── 怎么判断"水真的出来了"────────────────────────────────────────
+      // 走过两次弯路，别再退回去：
+      //  ① workStatus === 2 不行 —— 机器屏幕上写的是「设备已解锁 (6)秒 / 轻触【开始】
+      //     键出水」，这个状态下它就是 2，用户不按开始也是 2。
+      //  ② identify 有值也不行 —— 它是解锁后服务端就给出的"建单凭据"，扫码瞬间就有，
+      //     拿它当出水信号会让「已就绪」只维持一次轮询（约 1.2 秒）就跳成「接水中」。
+      // 唯一可靠的是 sync.amount（不是金额，但官方正是用它判断"这单有没有消费"）
+      // 相对**解锁那一刻的基线**是否增长：待命时它是个定值，出水后才会变大。
+      const amt = Number(last.amount) || 0;
+      if (baseAmount === null) baseAmount = amt;
+      const consumed = amt > baseAmount;
       if (consumed && !seenRunning) {
         // 第一次看到有消费 = 用户按了机器上的开始，水真的出来了
         seenRunning = true;
@@ -1355,7 +1363,9 @@ async function startWater() {
         }
         if (++waitTicks > START_WAIT_TICKS) break;
       } else {
-        // 出过水，现在 active 变 false = 机器上点结算了
+        // 出过水，现在 active 变 false = 机器上点结算了。
+        // 和官方一致：官方就是 `do { sync } while (workStatus == 2)`，
+        // workStatus 一离开 2 就退出循环去结算，不额外等。
         break;
       }
       if (ticks > 600) break;
@@ -1364,7 +1374,9 @@ async function startWater() {
 
     // 完全没有消费（一直没按开始）：不要拿空订单去结算，
     // 否则会生成一张 0 元废单，还会以「有未支付订单」挡住下一次接水。
-    const tookWater = seenRunning || (last && (Number(last.amount) > 0 || !!last.identify));
+    // 判据只能是 seenRunning（循环里靠 amount 增长置位）；identify 不能用来判断，
+    // 它解锁后就有值 —— 早期版本就是因为它，没出水也去建单，最后弹出一张订单号 null 的结算页。
+    const tookWater = seenRunning;
     if (!tookWater) {
       // 停水指令必须发给这一轮的设备，不能读 current（可能已经换成另一台了）
       try { await api('goods/endWater', { goodsId: dev.goodsId }); } catch (_) { }
@@ -1372,12 +1384,12 @@ async function startWater() {
       // 会以为是自己的操作问题，其实是根本没连上服务器。
       if (netFailed) {
         setState('网络不稳', '连不上服务器，请检查网络后重试');
-      } else if (machineEnded) {
-        // 扫完码没出水就直接在机器上点了「结算」。以前这里写「没有在机器上按开始」——
-        // 用户确实按了结算，这句话等于在说他的操作没发生。
-        setState('已结算', '机器上已结算，本次没有出水，未产生费用');
       } else {
-        setState('已取消', userStopped ? '已取消，本次未接水' : '没有在机器上按开始，本次未接水');
+        // 「扫码后一滴水没接」的所有走法都归到这里：手机上点取消、机器上按结算、
+        // 或者干脆放着不管超时。对用户来说这三件事的结果是一样的 —— 没接水、没花钱，
+        // 所以文案统一成一句，别再去区分是"谁"结束的（以前分「已结算」和「已取消」，
+        // 用户看到两套说法反而以为出了两回事）。
+        setState('已取消', '本次没有接水，未产生费用');
       }
       setRing(0);
       btn.textContent = '开始接水';
