@@ -32,6 +32,10 @@ public final class ScanCore {
      * 整幅解比裁块解多花一点时间（1920x1080 约 2.7ms vs 1.2ms），
      * 但这是"用户能看见就一定能认"的代价，值得。
      *
+     * 试过但**否决**的做法：把整幅缩小一半再解。tools/DownTest.java 实测
+     * 全幅在码占 2.9px/模块时仍能解，缩一半后在 5.1px/模块就开始失败 ——
+     * 缩小只会丢信息，对"扫得远"是负收益。
+     *
      * @param allowInvert 本次是否额外试一次反色（调用方按帧计数限流，
      *                    因为反色要多解一遍，而深底亮码是少数情况）
      */
@@ -51,6 +55,31 @@ public final class ScanCore {
             reader.reset();
         }
         return null;
+    }
+
+    /**
+     * 2x2 平均降采样（只取亮度平面，NV21 的 VU 部分直接丢掉）。
+     *
+     * 用平均而不是"隔点取一个"：隔点取会把模块边缘的过渡整个跳过，
+     * 小码上很容易整块丢模块；平均保留了一点抗锯齿信息，实测在小码上更稳。
+     */
+    public static byte[] downsample2(byte[] src, int w, int h, int w2, int h2) {
+        byte[] out = new byte[w2 * h2];
+        for (int y = 0; y < h2; y++) {
+            int sy = y * 2;
+            int row0 = sy * w, row1 = (sy + 1 < h ? sy + 1 : sy) * w;
+            int orow = y * w2;
+            for (int x = 0; x < w2; x++) {
+                int sx = x * 2;
+                int sx1 = sx + 1 < w ? sx + 1 : sx;
+                int a = src[row0 + sx] & 0xFF;
+                int b = src[row0 + sx1] & 0xFF;
+                int c = src[row1 + sx] & 0xFF;
+                int d = src[row1 + sx1] & 0xFF;
+                out[orow + x] = (byte) ((a + b + c + d) >> 2);
+            }
+        }
+        return out;
     }
 
     /**

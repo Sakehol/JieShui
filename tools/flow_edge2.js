@@ -68,7 +68,10 @@ const MOCK = `
       waterUse:{waterUseType:1, waterUseValueDesc:'0.5L'},
       tradeOrderItem:[{originPrice:'1.50', realPrice:'1.20'}],
       promotionList:[{promotionType:4, discountAmount:'0.30'}],
-      payPrice:'1.20', payTypeName:'支付宝免密支付'
+      payPrice:'1.20', payTypeName:'支付宝免密支付',
+      // 默认不带 orderStatus：让 B 组能维持"订单还挂着"的状态。
+      // E 组打开 detailPaid，模拟"order/sync 全落空但订单其实已经完成"。
+      orderStatus: o.detailPaid ? 3 : 0
     });
     if (path === 'goods/endWater') {
       // 记下停的是哪台 —— 会话被顶掉时最容易停错机器
@@ -91,11 +94,23 @@ module.exports = async (page, { sleep, url }) => {
   const base = url || 'http://127.0.0.1:8899/index.html';
 
   const setup = async (opts) => {
-    await page.evaluate(`localStorage.setItem('__opts', ${JSON.stringify(JSON.stringify(opts || {}))});
+    // 先确保当前文档是同源的，否则 localStorage 会抛 SecurityError
+    // （about:blank 上读 localStorage 在部分 Chrome 版本是被拒的）。
+    const stored = `localStorage.setItem('__opts', ${JSON.stringify(JSON.stringify(opts || {}))});
       localStorage.setItem('qk_token','mocktoken_0123456789abcdef');
       localStorage.setItem('qk_phone','13800138000');
       localStorage.setItem('qk_auto','0');
-      localStorage.setItem('qk_devices','[]'); 'ok'`);
+      localStorage.setItem('qk_devices','[]'); 'ok'`;
+    for (let i = 0; i < 3; i++) {
+      try { await page.evaluate(stored); return await finishSetup(); } catch (_) { }
+      await page.S('Page.navigate', { url: base });
+      await sleep(900);
+    }
+    await page.evaluate(stored);
+    await finishSetup();
+  };
+
+  const finishSetup = async () => {
     await page.S('Page.navigate', { url: base });
     await sleep(1300);
     await page.evaluate(`window.__startWaitTicks = 4; 'ok'`);
@@ -176,6 +191,18 @@ module.exports = async (page, { sleep, url }) => {
       stoppedOwnDeviceOnly: !/10002/.test(endWaters),
       stoppedOldDevice: /10001/.test(endWaters)
     };
+
+    // ---------- E：order/sync 全落空，但订单在服务端其实已经完成 ----------
+    // 这就是用户截图里的场景：接水一两秒就结算，支付宝已经扣款成功，
+    // App 却写「支付还没确认」，还让人去官方 App 点"立即支付"——
+    // 点开发现根本没有待支付订单。判据必须看订单状态，不能只看 sync 返回。
+    await setup({ syncNeverPaid: true, detailPaid: true });
+    await scan('NQT2024001');
+    await page.evaluate(`window.__pressAt = Date.now() + 100; 'ok'`);
+    await sleep(2200);
+    await page.evaluate(`window.__settleAt = Date.now(); 'ok'`);
+    await sleep(6000);
+    out.E_paidViaDetail = await page.evaluate(resultText);
 
     await page.shot(shot('edge2.png'));
   } catch (e) {

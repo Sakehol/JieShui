@@ -522,7 +522,21 @@ async function openScanner() {
       await track.applyConstraints({ width: { ideal: 1920 }, height: { ideal: 1440 } });
     } catch (_) { }
     try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (_) { }
-    try { await track.applyConstraints({ advanced: [{ zoom: 1 }] }); } catch (_) { }
+    // 数码变焦归位 —— 但"1"在不同机型上不是一个意思：
+    // 有的机型 zoom 是个比例（1 = 不放大），有的机型是一段区间（例如 100~400），
+    // 直接写 zoom:1 会被夹到区间下限，某些机器上那正好是 2 倍起跳；
+    // 反过来，写死 1 在这些机器上又完全不起作用。
+    // 所以先读 capabilities 的真实区间，取"最小倍率"—— 那永远是这颗镜头的光学基准。
+    // 用户反馈里"我和同学的手机变焦倍数明显不一样"，根因就是这里没做归一化。
+    try {
+      const caps = track.getCapabilities ? track.getCapabilities() : null;
+      const z = caps && caps.zoom;
+      if (z && typeof z.min === 'number') {
+        await track.applyConstraints({ advanced: [{ zoom: z.min }] });
+      } else {
+        await track.applyConstraints({ advanced: [{ zoom: 1 }] });
+      }
+    } catch (_) { }
   }
 
   const video = $('#video');
@@ -1256,7 +1270,18 @@ async function startWater() {
     // 结算结果要如实告诉用户，不能一律说"已结算"：
     // 订单没建出来、或 order/sync 一直没成功时，订单其实是「待支付」，
     // 说成已结算会让用户下次接水被"有未支付订单"挡住时完全不知道为什么。
-    let settleState = 'ok';          // ok / uncreated / unpaid
+    //
+    // 但反过来也不能把"已经付掉了"说成"待支付"（用户实测踩到过）：
+    // 接水一两秒就结算时，服务端建单和扣款都还在路上，
+    // order/sync 那几秒钟很可能还没把订单推到已完成，
+    // 而支付宝那边其实已经扣款成功了。判据必须是**订单自己的状态**（order/detail），
+    // 不是某一次调用的返回值。
+    //   ok       = 已确认支付
+    //   unpaid   = 订单建出来了，但服务端仍显示待支付
+    //   uncreated= 订单根本没建出来
+    //   none     = 本次没有产生消费（水量太少 / 没出水），不该有订单
+    let settleState = 'ok';
+    if (!finalOrderNo) settleState = 'none';
     if (finalOrderNo) {
       try {
         const created = await api('order/afterPay/creating', { orderNo: finalOrderNo });
@@ -1284,10 +1309,31 @@ async function startWater() {
             if (r && String(r.code) === '0') paid = true;
             else if (i < 3) await sleep(900);
           }
-          if (!paid) settleState = 'unpaid';
+          // 别急着下结论：订单状态才是准的。
+          // 短时接水（一两秒就结算）时，order/sync 往往还没把订单推进到完成，
+          // 但支付宝已经扣款成功；这时去看 order/detail 的订单状态就能看到真相。
           if (orderId) {
             try { detail = await api('order/detail', { orderId }); } catch (_) { }
           }
+          if (!paid) paid = orderLooksPaid(detail);
+          if (!paid) {
+            // 再给服务端几秒（只多问一次，不拖长）。支付宝的异步通知本来就比
+            // 我们的请求晚到，这一步能把"其实已支付"的绝大多数情况捞回来。
+            for (let i = 0; i < 2 && !paid && orderId; i++) {
+              await sleep(1200);
+              try {
+                const d2 = await api('order/detail', { orderId });
+                if (d2) detail = d2;
+                paid = orderLooksPaid(d2);
+              } catch (_) { }
+              if (!paid) {
+                let r = null;
+                try { r = await api('order/sync', { orderNo: realNo, payType: pt }); } catch (_) { }
+                if (r && String(r.code) === '0') paid = true;
+              }
+            }
+          }
+          if (!paid) settleState = 'unpaid';
         }
       } catch (_) {
         settleState = 'uncreated';
@@ -1343,6 +1389,28 @@ function resetDevicePanel() {
   if (fl) fl.classList.add('hidden');
   const fa = $('#flowAmount');
   if (fa) fa.textContent = '—';
+}
+
+/**
+ * 判断一份 order/detail 是否已经是「付掉了」。
+ *
+ * 为什么不能只看 order/sync 的返回值：接水一两秒就点结算时，服务端的建单、
+ * 扣款、回推状态都还在路上，我们那几次 order/sync 很可能全部落空，
+ * 但支付宝其实已经扣款成功（用户实测：APP 提示"支付还没确认"，
+ * 支付宝账单里已经扣了）。这时候去看订单自己的状态才是准的。
+ *
+ * 官方状态表（h5 包里的枚举）：
+ *   0 待支付 / 1 已失效 / 2 使用中(或已完成) / 3 已完成 / 4 退款中 / 5 已退款
+ * 2 和 3 都算"钱已经结清"—— 2 是机器还在用、3 是整单结束。
+ * 1/4/5 属于异常终态，不当作已支付。0 就是真的没付。
+ */
+function orderLooksPaid(detail) {
+  if (!detail) return false;
+  const st = detail.orderStatus;
+  if (st == null || st === '') return false;
+  const n = Number(st);
+  if (isNaN(n)) return false;
+  return n === 2 || n === 3;
 }
 
 function showResult(orderNo, orderId, detail, sync, settleState) {
@@ -1409,6 +1477,10 @@ function showResult(orderNo, orderId, detail, sync, settleState) {
   } else if (settleState === 'unpaid') {
     msg.textContent = '水已停，但支付还没确认。到原 App 里若有「待支付」订单，请点一次「立即支付」，否则会挡住下次接水。';
     msg.classList.add('warn');
+  } else if (settleState === 'none') {
+    // 压根没有消费（水没出来 / 时间太短不到最低计量），本来就不该有订单
+    msg.textContent = '本次没有产生费用';
+    msg.classList.remove('warn');
   } else if (settleState === 'ok') {
     msg.textContent = '费用已通过支付宝免密结算';
     msg.classList.remove('warn');

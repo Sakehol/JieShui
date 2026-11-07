@@ -53,8 +53,21 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
     /** 上一帧还没解完就丢掉这一帧，天然做到「最多只有一帧在路上」。 */
     private final java.util.concurrent.atomic.AtomicBoolean pending =
             new java.util.concurrent.atomic.AtomicBoolean(false);
-    /** 复用的拷贝缓冲，避免每帧 clone 出来 2 MB 垃圾。 */
-    private byte[] frameBuf;
+    /**
+     * 两块循环使用的预览缓冲（替代"每帧 clone 一份 3MB"）。
+     *
+     * Camera1 的 setPreviewCallback 是把相机线程里的那一块直接递给我们，
+     * 而相机下一帧就要覆盖它 —— 所以以前只能先 System.arraycopy 复制一份再丢给解码线程。
+     * 1920x1080 的 NV21 是 3.1MB，30fps 就是每秒 93MB 的内存拷贝，而且是在**主线程**上做的
+     * （相机是在主线程 open 的，回调就落在主线程）。这是 APP 比网页端明显更卡、
+     * 更容易"跟不上手"的直接原因。
+     *
+     * setPreviewCallbackWithBuffer 换成"把空缓冲交给相机、相机填满后连缓冲一起给我们"，
+     * 拿到的那块可以一直用到解码结束再还回去，一次拷贝都不用做。
+     * 两块就够：pending 保证同时只有一帧在解码，另一块留给相机继续填。
+     */
+    private byte[] bufA, bufB;
+    /** 预览分辨率（解码要用，setPreviewCallbackWithBuffer 路径下不再从参数里取）。 */
     private int previewW = 0, previewH = 0;
 
     private TextView hintView;
@@ -67,8 +80,11 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
     private int frameSide = 0;
     private View frameView;
     private long lastPhotoAt = 0;         // 上次拍全分辨率照片的时间
+    /** 预览真正跑起来的时刻。拍照会掐断预览，得让用户先看到画面，再谈兜底。 */
+    private long previewStartedAt = 0;
     private boolean photoBusy = false;
     private static final long PHOTO_INTERVAL_MS = 2600;   // 连续预览扫不出来时，多久拍一张
+    private static final long FIRST_PHOTO_DELAY_MS = 1200; // 进页面后至少先给预览这么久
 
     @Override
     protected void onCreate(Bundle b) {
@@ -128,7 +144,10 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         // 点一下画面 = 立刻拍一张全分辨率照片识别（远处的码靠这个）。
         // 网页端也是点画面触发，两端一致。
-        frameView.setOnClickListener(v -> { lastPhotoAt = 0; maybePhotoFallback(); });
+        // 点一下画面 = 立刻拍一张全分辨率照片再认。
+        // 两个时间戳都清零，绕过「刚进页面别急着拍」和「两次拍照间隔」的限制 ——
+        // 用户主动点的，就是要马上试。
+        frameView.setOnClickListener(v -> { lastPhotoAt = 0; previewStartedAt = 0; maybePhotoFallback(); });
 
         // 顶部栏
         LinearLayout top = Ui.row(this);
@@ -224,18 +243,10 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
                 return;
             }
             Camera.Parameters pr = camera.getParameters();
-            List<String> focus = pr.getSupportedFocusModes();
-            if (focus != null) {
-                // 连续对焦优先。有些机器只给 CONTINUOUS_VIDEO 或只给 AUTO，
-                // 不设的话默认是定焦，凑近拍二维码就是糊的 —— 这是"扫不上"的常见原因之一。
-                if (focus.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
-                    pr.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
-                } else if (focus.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
-                    pr.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
-                } else if (focus.contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
-                    pr.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
-                }
-            }
+            // 连续对焦优先。有些机器只给 CONTINUOUS_VIDEO 或只给 AUTO，
+            // 不设的话默认是定焦，凑近拍二维码就是糊的 —— 这是"扫不上"的常见原因之一。
+            // 这里统一走 applyFocus()：除了设对焦模式，还会把对焦区域钉在画面正中。
+            applyFocus(pr);
             List<Camera.Size> sizes = pr.getSupportedPreviewSizes();
             if (sizes != null && !sizes.isEmpty()) {
                 // 挑「整幅像素最多」的那一档。
@@ -272,13 +283,41 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
                 if (pr.isZoomSupported() && pr.getZoom() != 0) pr.setZoom(0);
             } catch (Exception ignored) {
             }
-            camera.setParameters(pr);
-            applySurfaceLayout(pr.getPreviewSize());
-
+            // setParameters 会因为对焦区域被拒而整个失败 —— 那就把对焦区域撤掉再试一次。
+            // 绝不能让"加了个优化"变成"相机直接起不来"。
+            try {
+                camera.setParameters(pr);
+            } catch (RuntimeException e) {
+                try {
+                    pr.setFocusAreas(null);
+                    camera.setParameters(pr);
+                } catch (RuntimeException e2) {
+                    throw e2;
+                }
+            }
             camera.setPreviewDisplay(holder);
             setDisplayOrientation();
-            camera.setPreviewCallback(this);
+            // **必须回读相机真实采用的参数**，不能用我们请求的那一份。
+            // 有些 ROM 会静默把预览尺寸换成它自己支持的档位（尤其是请求的这档
+            // 同时被拍照/录像占用时）。一旦实际尺寸和我们以为的不一样，
+            // addCallbackBuffer 给的缓冲就偏大或偏小，相机侧会直接不回调 ——
+            // 症状就是"画面正常，但一帧都不进识别"，且完全没有报错。
+            Camera.Size ps = camera.getParameters().getPreviewSize();
+            previewW = ps.width;
+            previewH = ps.height;
+            // 画面矩形也按**真实**尺寸算，别按请求的算 —— 两者不一致时，
+            // 取景框会画在错误的位置上。
+            applySurfaceLayout(ps);
+            // 用 setPreviewCallbackWithBuffer：相机把帧直接写进我们给的缓冲，
+            // 回调时连缓冲一起交回来，解码线程用完再还。省掉每帧一次 3MB 的主线程拷贝。
+            int frameBytes = previewW * previewH * 3 / 2;   // NV21
+            bufA = new byte[frameBytes];
+            bufB = new byte[frameBytes];
+            camera.addCallbackBuffer(bufA);
+            camera.addCallbackBuffer(bufB);
+            camera.setPreviewCallbackWithBuffer(this);
             camera.startPreview();
+            previewStartedAt = System.currentTimeMillis();
         } catch (Exception e) {
             hintView.setText("相机启动失败：" + e.getMessage());
             stopPreview();
@@ -369,13 +408,15 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
     private void stopPreview() {
         if (camera != null) {
             try {
-                camera.setPreviewCallback(null);
+                camera.setPreviewCallbackWithBuffer(null);
                 camera.stopPreview();
                 camera.release();
             } catch (Exception ignored) {
             }
             camera = null;
         }
+        bufA = null;
+        bufB = null;
     }
 
     private void toggleTorch(TextView btn) {
@@ -389,42 +430,94 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
             }
             torchOn = !torchOn;
             pr.setFlashMode(torchOn ? Camera.Parameters.FLASH_MODE_TORCH : Camera.Parameters.FLASH_MODE_OFF);
+            // 开闪光灯会改对焦参数，顺手把对焦模式再设回去：
+            // 有些机器在这一下之后会退成定焦，之后就一直糊着。
+            applyFocus(pr);
             camera.setParameters(pr);
             btn.setAlpha(torchOn ? 1f : 0.6f);
         } catch (Exception ignored) {
         }
     }
 
+    /**
+     * 选一个连续对焦模式，顺手把对焦区域摆到画面正中。
+     *
+     * 只设 focusMode 是不够的：不少国产 ROM 默认的对焦区域是全画面均摊，
+     * 而我们要认的是**画面中央那一块**。把测光/对焦区域钉在中心附近，
+     * 近距离对着二维码时合焦会快得多，也不容易被背景抢焦。
+     * 用户反馈"APP 比网页端难扫"的一个来源就是这个 —— 浏览器那边
+     * Chrome 默认就是中心权重对焦。
+     */
+    private void applyFocus(Camera.Parameters pr) {
+        try {
+            List<String> modes = pr.getSupportedFocusModes();
+            String pick = null;
+            if (modes != null) {
+                if (modes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
+                    pick = Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE;
+                } else if (modes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
+                    pick = Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO;
+                } else if (modes.contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
+                    pick = Camera.Parameters.FOCUS_MODE_AUTO;
+                }
+            }
+            if (pick != null) pr.setFocusMode(pick);
+        } catch (Exception ignored) {
+        }
+        try {
+            if (pr.getMaxNumFocusAreas() > 0) {
+                android.graphics.Rect r = new android.graphics.Rect(-200, -200, 200, 200);
+                List<Camera.Area> areas = new java.util.ArrayList<>();
+                areas.add(new Camera.Area(r, 1000));
+                pr.setFocusAreas(areas);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     public void onPreviewFrame(byte[] data, Camera cam) {
-        if (data == null || handled || camera == null) return;
+        if (data == null || camera == null) return;
+        if (handled) {
+            // 已经扫到了，缓冲还是要还回去，否则相机再也不会回调
+            releaseBuffer(data);
+            return;
+        }
         // 连续预览扫了 2.6 秒还没结果，就拍一张全分辨率照片再认 ——
         // 这是"远处 / 小码 / 有点糊"时真正管用的那一招，靠调预览参数救不回来。
         maybePhotoFallback();
-        if (!pending.compareAndSet(false, true)) return;
-
-        final Camera.Size size = cam.getParameters().getPreviewSize();
-        final int w = size.width, h = size.height;
-        if (frameBuf == null || frameBuf.length != data.length || w != previewW || h != previewH) {
-            frameBuf = new byte[data.length];
-            previewW = w;
-            previewH = h;
+        if (!pending.compareAndSet(false, true)) {
+            // 上一帧还在解码，这一帧直接丢，但缓冲必须马上还给相机
+            releaseBuffer(data);
+            return;
         }
-        final byte[] buf = frameBuf;
-        System.arraycopy(data, 0, buf, 0, data.length);
 
+        final int w = previewW, h = previewH;
+        // 不再 System.arraycopy：data 这块缓冲现在归我们，相机手上还有另一块。
+        // 解完（或放弃）再还回去，全程零拷贝。
         decoder.execute(() -> {
             String text = null;
             try {
-                text = decode(buf, w, h);
+                text = decode(data, w, h);
             } catch (Throwable ignored) {
             } finally {
                 pending.set(false);
+                releaseBuffer(data);
             }
             if (text != null && !handled) {
                 handled = true;
                 final String out = text;
                 ui.post(() -> onScanned(out));
+            }
+        });
+    }
+
+    /** 把预览缓冲还给相机（必须在打开相机的那条线程上调用，所以统一 post 到主线程）。 */
+    private void releaseBuffer(final byte[] buf) {
+        ui.post(() -> {
+            try {
+                if (camera != null) camera.addCallbackBuffer(buf);
+            } catch (Throwable ignored) {
             }
         });
     }
@@ -489,29 +582,81 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
     private void maybePhotoFallback() {
         if (photoBusy || handled || camera == null) return;
         long now = System.currentTimeMillis();
+        // takePicture() 会掐断预览流。必须在"预览已经跑起来一会儿"之后才拍，
+        // 否则刚进页面第一帧就拍照，用户看到的是黑屏闪一下，体验很差，
+        // 而且那一张多半还没对上焦。
+        if (now < previewStartedAt + FIRST_PHOTO_DELAY_MS) return;
         if (now - lastPhotoAt < PHOTO_INTERVAL_MS) return;
         lastPhotoAt = now;
         photoBusy = true;
-        ui.post(() -> hintView.setText("正在拍照识别…"));
-        try {
-            camera.takePicture(null, null, (byte[] data, Camera cam) -> {
-                photoBusy = false;
-                decoder.execute(() -> {
-                    String text = decodeJpeg(data);
-                    if (text != null && !handled) {
-                        handled = true;
-                        final String out = text;
-                        ui.post(() -> onScanned(out));
-                    } else {
-                        // 这一张没认出来，隔久一点再拍，别把电和 CPU 都耗在连拍上
-                        lastPhotoAt = System.currentTimeMillis() + PHOTO_INTERVAL_MS;
-                        ui.post(() -> hintView.setText("没识别到，把二维码再靠近点"));
-                        try { if (camera != null) camera.startPreview(); } catch (Throwable ignored) { }
+        ui.post(() -> {
+            hintView.setText("正在拍照识别…");
+            // 关键：takePicture() 必须在打开相机的那条线程（主线程）上调用。
+            // 这里原来是直接在 onPreviewFrame 的回调线程里调 —— 那条线程正是相机
+            // 派发预览帧的线程，在它上面调 takePicture 会阻塞等待自己把帧交完，
+            // 轻则卡住几秒，重则在部分 ROM 上直接不再回调（相机就"死了"）。
+            // 网页端有 ImageCapture 走的是独立通道，所以同样的逻辑在浏览器里没事，
+            // 这也正是"网页能扫、App 扫不出"的一部分来源。
+            try {
+                if (camera == null) { photoBusy = false; return; }
+                camera.takePicture(null, null, (byte[] data, Camera cam) -> {
+                    photoBusy = false;
+                    if (data == null || data.length == 0) {
+                        restartPreview();
+                        return;
                     }
+                    decoder.execute(() -> {
+                        String text = null;
+                        try {
+                            text = decodeJpeg(data);
+                        } catch (Throwable ignored) {
+                        }
+                        if (text != null && !handled) {
+                            handled = true;
+                            final String out = text;
+                            ui.post(() -> onScanned(out));
+                        } else {
+                            // 这一张没认出来，隔久一点再拍，别把电和 CPU 都耗在连拍上
+                            lastPhotoAt = System.currentTimeMillis() + PHOTO_INTERVAL_MS;
+                            ui.post(() -> {
+                                hintView.setText("没识别到，把二维码再靠近点");
+                                // takePicture() 会把预览停掉，从而清空所有回调缓冲。
+                                // 光调 startPreview() 的话，画面会回来，但相机手上一个缓冲都没有，
+                                // onPreviewFrame 再也不触发 —— 表现就是"拍完一张之后再也扫不上了"。
+                                // 所以必须先把缓冲重新交回去再开预览。
+                                restartPreview();
+                            });
+                        }
+                    });
                 });
-            });
-        } catch (Throwable t) {
-            photoBusy = false;
+            } catch (Throwable t) {
+                photoBusy = false;
+                restartPreview();
+            }
+        });
+    }
+
+    /**
+     * 拍完照之后把预览恢复起来。
+     *
+     * 不能只调 startPreview()：takePicture() 结束预览时会把已经交出去的
+     * 回调缓冲全部清掉，此时 startPreview() 虽然能让画面回来，但相机手上
+     * 一个缓冲都没有，onPreviewFrame 就再也不会被调用 ——
+     * 症状是"拍了一张没认出来，之后就彻底不动了"。必须重新把缓冲交回去。
+     */
+    private void restartPreview() {
+        if (camera == null) return;
+        try {
+            int frameBytes = Math.max(1, previewW * previewH * 3 / 2);
+            if (bufA == null || bufA.length != frameBytes) bufA = new byte[frameBytes];
+            if (bufB == null || bufB.length != frameBytes) bufB = new byte[frameBytes];
+            camera.setPreviewCallbackWithBuffer(null);
+            camera.addCallbackBuffer(bufA);
+            camera.addCallbackBuffer(bufB);
+            camera.setPreviewCallbackWithBuffer(this);
+            camera.startPreview();
+            previewStartedAt = System.currentTimeMillis();
+        } catch (Throwable ignored) {
         }
     }
 
@@ -542,12 +687,20 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
     /** 多尺度 + 两种极性解一张位图。这里可以放心地慢。 */
     private String decodeBitmapDeep(android.graphics.Bitmap bmp) {
         int longSide = Math.max(bmp.getWidth(), bmp.getHeight());
-        int[] caps = new int[]{1600, 1100, 760};
+        // 第一档就必须是「原图」（decodeJpeg 已经把长边限到 2600）。
+        //
+        // 这里踩过一次坑：最初只写 {1600, 1100, 760} —— 全是缩小，等于把
+        // 拍照兜底的全部意义（"照片比预览多一个数量级的像素"）在第一步就丢掉了。
+        // 远处的码在 4000 宽的照片里可能只占 200px，缩到 1600 就剩 80px，直接没了；
+        // 而 tools/DownTest.java 实测过：缩小只会丢信息，对"扫得远"是负收益。
+        // 现在从原图开始，认不出再逐档缩小（缩小有时能救回"码太大占满画面"的情况）。
+        int[] caps = new int[]{2600, 1800, 1200, 800};
         for (int cap : caps) {
             float sc = Math.min(1f, (float) cap / longSide);
             int w = Math.max(1, Math.round(bmp.getWidth() * sc));
             int h = Math.max(1, Math.round(bmp.getHeight() * sc));
-            android.graphics.Bitmap small = android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true);
+            android.graphics.Bitmap small = (w == bmp.getWidth() && h == bmp.getHeight())
+                    ? bmp : android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true);
             try {
                 byte[] gray = toGray(small);
                 String r = ScanCore.decodeGray(reader, gray, w, h);
@@ -603,6 +756,7 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
         super.onDestroy();
         stopPreview();
         decoder.shutdownNow();
-        frameBuf = null;
+        bufA = null;
+        bufB = null;
     }
 }

@@ -1276,10 +1276,11 @@ public class MainActivity extends Activity {
 
                 JSONObject detail = null;
                 String payTypeUsed = Prefs.payType(this);
-                // 结算状态：ok=已确认支付 / uncreated=订单没建出来 / unpaid=订单建出来了但仍是待支付。
+                // 结算状态：ok=已确认支付 / uncreated=订单没建出来 /
+                // unpaid=订单建出来了但仍是待支付 / none=这次压根没有消费。
                 // 不能一律显示「费用已通过支付宝免密结算」—— 说成已结算而实际挂着
                 // 「待支付」，用户下次接水被挡住时会完全不知道原因。
-                String settleState = "uncreated";
+                String settleState = finalNo.isEmpty() ? "none" : "uncreated";
                 // 展示用订单号：以 afterPay/creating 返回的 orderNo 为准。
                 // goods/water/sync 的 identify 只是「创建后付费订单」的凭据，不是最终订单号
                 // （官方单号形如 0620261106004023612291）。拿 identify 去调 order/sync，
@@ -1330,6 +1331,39 @@ public class MainActivity extends Activity {
                                 Object dt = Api.call("order/detail", Api.params("orderId", oid), Prefs.token(this));
                                 if (dt instanceof JSONObject) detail = (JSONObject) dt;
                             }
+                            // 别急着下结论：订单自己的状态才是准的。
+                            //
+                            // 只信 order/sync 的返回值在「接水一两秒就结算」时必然误判：
+                            // 那几次 sync 很可能全部落空，但支付宝异步扣款其实已经成功了。
+                            // 用户实测过这种场景 —— APP 写「支付还没确认」，支付宝账单里钱已经扣了，
+                            // 于是他被引导去官方 App 点「立即支付」，点开发现根本没有待支付订单。
+                            if (!paid) paid = orderLooksPaid(detail);
+                            for (int i = 0; i < 2 && !paid && !oid.isEmpty(); i++) {
+                                try {
+                                    Thread.sleep(1200);
+                                } catch (InterruptedException ignored) {
+                                }
+                                try {
+                                    Object d2 = Api.call("order/detail", Api.params("orderId", oid), Prefs.token(this));
+                                    if (d2 instanceof JSONObject) {
+                                        detail = (JSONObject) d2;
+                                        paid = orderLooksPaid(detail);
+                                    }
+                                } catch (Api.ApiException ignored) {
+                                }
+                                if (!paid) {
+                                    try {
+                                        Object r = Api.call("order/sync",
+                                                Api.params("orderNo", realNo, "payType", payTypeUsed),
+                                                Prefs.token(this));
+                                        if (r instanceof JSONObject && "0".equals(((JSONObject) r).optString("code", ""))) {
+                                            paid = true;
+                                        }
+                                    } catch (Api.ApiException ignored) {
+                                    }
+                                }
+                            }
+                            if (paid) settleState = "ok";
                         }
                     } catch (Api.ApiException ignored) {
                         settleState = "uncreated";
@@ -1413,6 +1447,9 @@ public class MainActivity extends Activity {
             sub = Ui.text(this, "水已停，但支付还没确认。若原 App 里有「待支付」订单，点一次「立即支付」，否则会挡住下次接水", 12, Prefs.C_WARN, false);
         } else if ("uncreated".equals(settleState)) {
             sub = Ui.text(this, "水已停，但订单没有生成成功。请到原 App 里确认这笔订单", 12, Prefs.C_WARN, false);
+        } else if ("none".equals(settleState)) {
+            // 压根没有消费（水没出来 / 时间太短不到最低计量），本来就不该有订单
+            sub = Ui.text(this, "本次没有产生费用", 12, Prefs.C_FG2, false);
         } else {
             sub = Ui.text(this, "费用已通过支付宝免密结算", 12, Prefs.C_FG2, false);
         }
@@ -1773,6 +1810,31 @@ public class MainActivity extends Activity {
             return Double.parseDouble(s.trim());
         } catch (NumberFormatException e) {
             return 0;
+        }
+    }
+
+    /**
+     * 判断一份 order/detail 是否已经「付掉了」。
+     *
+     * 只看 order/sync 的返回值在「接水一两秒就结算」时必然误判：服务端的建单、
+     * 扣款、状态回推都还在路上，那几次 sync 很可能全部落空，但支付宝其实已经扣款成功。
+     * 用户实测过：APP 写「支付还没确认」，支付宝账单里钱已经扣了，然后他被引导去官方
+     * App 点「立即支付」，点开发现根本没有待支付订单。
+     *
+     * 官方状态表（h5 包里的枚举）：
+     *   0 待支付 / 1 已失效 / 2 使用中(或已完成) / 3 已完成 / 4 退款中 / 5 已退款
+     * 2 和 3 都算钱已结清 —— 2 是机器还在用、3 是整单结束。
+     * 1/4/5 是异常终态，不当作已支付；0 就是真的没付。
+     */
+    private static boolean orderLooksPaid(JSONObject detail) {
+        if (detail == null) return false;
+        String st = detail.optString("orderStatus", "");
+        if (st.isEmpty()) return false;
+        try {
+            int n = Integer.parseInt(st.trim());
+            return n == 2 || n == 3;
+        } catch (NumberFormatException e) {
+            return false;
         }
     }
 
