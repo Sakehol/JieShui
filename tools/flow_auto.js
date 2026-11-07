@@ -55,9 +55,9 @@ const MOCK = `
         // 结果真机上页面再也没进过「接水中」。别再改回 2。
         //
         // identify 也别给值：它是解锁时就下来的"建单凭据"，真机上扫码瞬间就有。
-        data = {workStatus:0, identify:'IDENTIFY_A', amount:'0', status:1};   // status1=已解锁，等用户按【开始】
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};   // status1=已解锁，等用户按【开始】
       } else if (!window.__finishAt) {
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:2};  // status2=正在出水
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:2};  // status2=正在出水
       } else {
         data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:3};  // status3=本单结束
         if (!window.__settleAt) window.__settleAt = Date.now();

@@ -328,7 +328,7 @@ goods/normal/skus        goodsId          → skuId, name, extAttr.level[0].pric
 waterQuota/getActive     shopId,categoryCode → show, text（水卡/额度文案）
 payChannelRoute/addUserAfterPayChannel  method  → 登记后付费渠道（接水前必调，见下）
 goods/water/unlock       skuId,promotions,payType=15 → msgId, orderNo
-goods/water/sync         skuId            → status(1=等按开始,2=出水,4=暂停,3/5=收口,6=故障), workStatus, amount, identify
+goods/water/sync         skuId            → status, workStatus, amount, identify（语义见下方真机实测）
 goods/endWater           goodsId          → 停水
 order/afterPay/creating  orderNo          → orderId, orderStatus, payType
 order/sync               orderNo,payType  → code=="0" 才算支付完成（关键，见下）
@@ -357,6 +357,27 @@ order/detail             orderId          → waterUse.waterUseValueDesc, tradeO
 > **`goods/water/sync` 的 `amount` 不是金额**，不要除以 100 当钱显示（实测接 0.2L 时它返回 `76`，
 > 而真实原价是 ¥0.04）。官方 `DeviceStartupAct.createObserver$lambda$38` 只用它做判断：
 > `amount` 非空且 `>0` 且有 `identify` 时才调 `afterPay(identify)`，从不展示给用户。
+>
+> **判「水有没有出来」只能看 `status`**。这一条是 2026-11-08 在真机上抓了 18 行原始响应之后才定下来的，
+> 之前四版全栽在猜字段含义上：
+>
+> ```
+> #16 02:03:48  amount=null  identify=null                     status=6  workStatus=1   还没扫码
+> #21 02:03:55  amount=null  identify="0620261108020353..."    status=1  workStatus=2   扫完码，等按【开始】
+> #29 02:04:04  amount=59    identify="0620261108020353..."    status=5  workStatus=1   机器上按了【结算】
+> ```
+>
+> - `status`：`6` = 机器空闲、没有这一单；`1` = 闸已开、等按【开始】；`2` = 正在出水；
+>   `4` = 暂停；`3` / `5` = 已结算收口（官方 dex `lambda$38` 只对 3/5/6 特殊处理）。
+> - `workStatus`：**只表示「有没有正在进行的单」**（解锁前 1 → 解锁后 2 → 结算后回 1），
+>   **不代表有没有出水**。官方 `LockingAct` 用 `workStatus==2` 就直接进接水中页，所以它看着像
+>   「在出水」，其实只是「这一单开了」。
+> - `amount`：**结算前恒为 `null`**，收口那一刻才回填。任何「amount 涨了 = 出水」的判据在真机上
+>   都不可能成立 —— v1.0.8 ~ v1.1.3 卡在「已就绪」就是这么来的。
+> - 兜底：`amount` 从 `null` 变成正数说明表上有读数，读数还在涨按出水算、连续 3 轮不动按暂停算。
+>
+> 教训：写进 mock 的「真机就是这样」必须能指出是哪一次、哪个字段、抓到什么值；
+> 指不出来的一律按猜测处理，别拿自己的 mock 验证自己的假设。
 >
 > **判「水有没有出来」不能看任何字段的「值」，只能看它「变没变」**（v1.1.5 定稿）：
 > 真机上 `workStatus` **解锁完就是 `2`**（还没按【开始】），官方 dex `LockingAct`

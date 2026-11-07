@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://userapi.qiekj.com; base-uri 'none'; form-action 'none'">
+<title>接水 · 取证</title>
+<link rel="stylesheet" href="capture.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>接水 · 真机取证</h1>
+  <div class="sub">解锁 + 记录，不改机器状态以外的任何东西</div>
+
+  <div class="card">
+    <label for="devSel">设备</label>
+    <select id="devSel"><option value="">加载中…</option></select>
+    <div class="row">
+      <button id="btnUnlock">① 开阀解锁</button>
+      <button id="btnStart" disabled>② 开始记录</button>
+    </div>
+    <div class="row">
+      <button id="btnMark" class="ghost" disabled>打个标记</button>
+      <button id="btnStop" class="ghost" disabled>停止</button>
+    </div>
+    <div class="row">
+      <button id="btnCopy" class="ghost">复制全部</button>
+      <button id="btnClear" class="ghost">清空</button>
+    </div>
+    <div class="hint">
+      按顺序来：<br>
+      <b>① 开阀解锁</b> → 页面显示「已开阀，等你在机器上按开始」<br>
+      <b>② 开始记录</b> → 手先别动，等它记 2 行<br>
+      → 走到机器前，按 <b>【开始】</b>，等 4 秒<br>
+      → 按 <b>【暂停】</b>，等 4 秒<br>
+      → 按 <b>【继续】</b>，等 4 秒<br>
+      → 按 <b>【结算】</b>，等它记 3 行<br>
+      然后点「复制全部」发回来。<br>
+      变了的值会标 <b>*</b>，一眼能看出哪个字段在动。
+    </div>
+  </div>
+
+  <div id="log">等待操作…</div>
+</div>
+
+<script src="capture.js"></script>
+</body>
+</html>

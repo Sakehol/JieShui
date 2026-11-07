@@ -48,7 +48,7 @@ const MOCK = `
       // 关键：identify 是真正的 JSON null，不是空串 —— 服务端没出水时就是这样。
       // 机器在用户按下「结算」后从 0 变成 3。
       // 但没出水时 amount 仍是 0、identify 仍是 JSON null。这才是"扫码后没接水"的真实帧。
-      if (!window.__settleAt) return J({workStatus:0, identify:'IDENTIFY_A', amount:'0', status:1});
+      if (!window.__settleAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:null, status:1});
       return J({workStatus:3, identify:null, amount:'0', status:3});
     }
     if (p in D) {

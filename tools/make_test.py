@@ -44,38 +44,42 @@ MOCK_BLOCK = r'''
                 return "{\"code\":0,\"data\":{\"msgId\":\"m1\",\"orderNo\":\"0620261106004023612291\"}}";
             case "goods/water/sync":
                 mockSyncTicks++;
-                // 前 2 次模拟"机器已解锁（屏幕显示「设备已解锁 N 秒 / 轻触【开始】键出水」），
-                // 但用户还没按开始"：workStatus 仍是 0（阀开了但没出水）、amount 0。
-                // 这里曾经写 workStatus:2 并注释「真机就是这样」，后来正是这类臆测
-                // 让 v1.0.8 / v1.1.3 否定了 workStatus==2 这个唯一有效的判据。
-                // status 用的是官方语义（h5 checkChannelStatus + dex lambda$38 一致）：
-                //   1 = 已解锁等用户按【开始】   2 = 正在出水
-                //   4 = 暂停                   3 / 5 = 本单结束，该出账了
-                //   6 = 设备异常
+                // 下面这几个取值是 2026-11-08 02:03 真机抓包实测的，不是猜的：
+                //   #16~#20（还没解锁）  amount=null identify=null status=6 workStatus=1
+                //   #21~#28（已解锁待按）amount=null identify=0620... status=1 workStatus=2
+                //   #29~#33（已结算）    amount=59  identify=0620... status=5 workStatus=1
+                // 两条最关键的事实，以前都写反了：
+                //   · 等待期 workStatus 就已经是 2 —— 所以「0→2 才算开始」永远等不到，
+                //     而「workStatus==2 就是出水」又会一解锁就跳接水中
+                //   · amount 结算前恒为 null —— 所以任何「amount 涨了 = 出水」的判据
+                //     在真机上都不可能成立
+                // status 才是机器状态：
+                //   6 = 机器空闲没这单   1 = 闸已开等按【开始】
+                //   2 = 正在出水        4 = 暂停        3 / 5 = 已结算收口
                 // 取消档：全程不给 status=2（用户没在机器上按【开始】），
                 // 第 4 轮直接给 status=3（用户改在机器上按了【结算】）。
                 // 必须排在 `mockSyncTicks < 6` 那条前面，否则第 3 轮会漏出一个
                 // status=2，seenRunning 被置位，这一档就永远测不到取消。
                 if (MOCK_CANCEL) {
                     if (mockSyncTicks <= 3) {
-                        return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
+                        return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":null,\"status\":1}}";
                     }
-                    return "{\"code\":0,\"data\":{\"workStatus\":3,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":3}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":1,\"identify\":\"QK202411050001\",\"amount\":null,\"status\":5}}";
                 }
                 if (mockSyncTicks <= 2) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":null,\"status\":1}}";
                 }
                 // 暂停档要先把「按开始出水」这一段走完，否则 seenRunning 还是 false，
                 // 代码里 `st == 4 && seenRunning` 这一支永远进不去 —— 测出来的
                 // 就是「页面停在已就绪」，跟 bug 本身混在一起分不清。
                 if (MOCK_PAUSE && mockSyncTicks >= 4) {
                     // 暂停档：status=4，amount 冻在暂停那一刻不再增长
-                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"240\",\"status\":4}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":null,\"status\":4}}";
                 }
                 if (mockSyncTicks < 6) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"" + (60 * mockSyncTicks) + "\",\"status\":2}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":null,\"status\":2}}";
                 }
-                return "{\"code\":0,\"data\":{\"workStatus\":3,\"identify\":\"QK202411050001\",\"amount\":\"186\",\"status\":3}}";
+                return "{\"code\":0,\"data\":{\"workStatus\":1,\"identify\":\"QK202411050001\",\"amount\":\"59\",\"status\":5}}";
             case "payChannelRoute/addUserAfterPayChannel":
                 return "{\"code\":0,\"data\":null}";
             case "order/afterPay/creating":

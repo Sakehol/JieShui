@@ -1293,20 +1293,10 @@ async function startWater() {
 
     let last = null, ticks = 0, userStopped = false;
     let seenRunning = false, waitTicks = 0, netFailed = false;
-    let machineEnded = false;
-    // 机器被解锁后 workStatus 就已经是 2 了，但那时用户还没按【开始】，一滴水都没出。
-    // 所以还得单独记一个「解锁过」的标记，用来区分「解锁后一直没出水就结束」。
-    let sawActive = false;
     let waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
-    let stillTicks = 0;      // 连续多少轮没出水，用来在没有 status 时猜暂停
     let pausedShown = false;
-    // 已确认的稳定快照。做法是「新值必须连着两轮 sync 都一样才算数」——
-    // 解锁后服务端刚要登记这一单时自己会抖一下，那一下不能当用户按键。
-    let baseSig = null;      // 确认下来的基线
-    let pendSig = null;      // 还没确认的新值
-    let lastAmt = null;      // 上一轮的 amount
-    let grewStreak = 0;      // amount 连续涨了几轮
-    let freezeTicks = 0;     // amount 连续几轮不动（判暂停）
+    // 解锁稳定下来之后的 status（1 = 闸已开等按开始）。只在 status 不再是 6 时建立。
+    let baseSt = null;
     let baseAmount = null;   // 只给调试面板显示用
     let baseWs = null;       // 只给调试面板显示用
     let initialSt = null;    // 只给调试面板显示用
@@ -1314,8 +1304,11 @@ async function startWater() {
     let everGrew = false;    // 整个会话里 amount 涨过没有
     let started = false;     // 用户已经在机器上按过【开始】
     let sawRealSignal = false;   // 见过真信号：面板按键 / 出水计量，用来判断有没有接过水
-    let waterPhase = 0;      // 开始之后确认过几次面板按键：1=暂停，2=继续
     let wateringNow = false; // 当前是否在出水
+    // 上一次的 amount 读数（null 表示表上还没有读数），用来判断读数还在不在涨
+    let lastAmt = null;
+    // 有读数但连续几轮没涨了 —— 3 轮（约 3.6 秒）不动就当机器上按了【暂停】
+    let freezeTicks = 0;
     // 最近若干次原始 sync 响应，排查时在控制台敲 window.__qkSyncLog 就能看到
     window.__qkSyncLog = [];
     // 约 90 秒等用户按机器上的开始。测试里可以用 window.__startWaitTicks 缩短。
@@ -1373,68 +1366,63 @@ async function startWater() {
       const stRaw = last.status;
       const st = (stRaw === null || stRaw === undefined || stRaw === '') ? null : Number(stRaw);
       const endedByStatus = st === 3 || st === 5;
-      const fault = st === 6;
 
-      // 第一轮 sync 一定发生在「刚解锁、用户还没按机器上的【开始】」的时候，
-      // 拿它当基准快照，本身不算一次按键。
+      // ── status 的真机语义（2026-11-08 02:03 用户抓包实测）──────────────
+      //   6 = 机器空闲、没有这一单（还没解锁时一直是 6）
+      //   1 = 闸已开、等你在机器上按【开始】   ← 「已就绪」
+      //   2 = 正在出水                        ← 「接水中」
+      //   4 = 机器上按了【暂停】
+      //   3 / 5 = 机器已经结算收口
+      // 另外两条同样是从那份数据里看到的：
+      //   · amount 在结算前恒为 null，收口那一刻才变成具体数字
+      //   · workStatus 只表示「有没有正在进行的单」（1→2→1），不代表有没有出水
       const idNow = (last.identify === null || last.identify === undefined) ? '' : String(last.identify);
-      const wsNow = (last.workStatus === null || last.workStatus === undefined) ? null : Number(last.workStatus);
-      const sig = st + '|' + wsNow;
-      if (baseSig === null) {
-        baseSig = sig;
+
+      // 基线只在「订单已经登记好、status 不再是 6」的时候才建立。
+      // 以前是拿解锁后第一轮 sync 当基线，可那一轮 status 还是 6，
+      // 订单一登记 6→1、workStatus 1→2，签名一变就被当成「用户按了开始」，
+      // 于是页面不用人操作就自己跳到「接水中」—— 这就是「秒跳」的根因。
+      if (baseSt === null && st !== null && st !== 6) {
+        baseSt = st;
         baseAmount = amt;
-        baseWs = wsNow;
+        baseWs = Number(last.workStatus);
         initialSt = st;
         initialId = idNow;
-        lastAmt = amt;
       }
 
-      // ── 出水判定 ─────────────────────────────────────────────────────
-      // 官方 dex 里 LockingAct 开锁后就是拿 workStatus 分流：
-      //   1 → 另一条路   2 → 直接进 StartStatusAct（接水中）   3 → toast「设备工作中」
-      // 但真机上解锁完它就是 2 ——「已就绪」和「接水中」在 workStatus 上分不开，
-      // 这正是 v1.1.4 一解锁就跳接水中、等 0→2 那次变化又永远等不到的原因。
-      //
-      // 能分开二者的只剩「面板被按了一下，返回的东西就变一次」：
-      //   · status / workStatus 的签名变了（连两轮一样才认，滤掉解锁抖动）
-      //   · identify 从「没有」变成「有」（解锁只是开阀，按下【开始】才建单）
-      //   · amount 连续两轮在涨（表在走 = 一定在出水）
-      // 第一次确认 = 按了【开始】；再确认一次 = 【暂停】；再一次 = 【继续】。
-      if (sig !== baseSig) {
-        if (pendSig === sig) {
-          baseSig = sig;              // 连续两轮都是这个新值 → 认定为面板真的被按了一下
-          pendSig = null;
-          waterPhase++;
-          // 第 1 次确认 = 按了【开始】（出水）；第 2 次 = 【暂停】；第 3 次 = 【继续】
-          if (!started) { started = true; sawRealSignal = true; wateringNow = true; }
-          else { wateringNow = waterPhase % 2 === 1; }
-        } else {
-          pendSig = sig;              // 第一次看到，再等一轮确认
-        }
-      } else {
-        pendSig = null;
-      }
-
-      // identify 从「没有」变成「有」：解锁那一刻它还空着，机器记上这一单才有值。
-      if (!started && initialId === '' && idNow !== '') {
-        started = true; sawRealSignal = true; wateringNow = true;
-      }
-
-      // amount 兜底：连着两轮在涨说明表在走。真机如果签名压根不动，就靠它认出水。
-      if (lastAmt !== null && amt > lastAmt) {
-        grewStreak++;
-        if (grewStreak >= 2) {
-          if (!started) { started = true; sawRealSignal = true; wateringNow = true; }
-          freezeTicks = 0;
-        }
-      } else {
-        grewStreak = 0;
-        // 已经在出水、这一单确实走过表，连着 3 轮不走 = 机器上按了【暂停】
-        if (started && wateringNow && everGrew && !endedByStatus && !fault) {
-          if (++freezeTicks >= 3) wateringNow = false;
-        }
+      // ── 出水判定：三层，全部有真机数据支撑 ────────────────────────────
+      // 真机抓包（2026-11-08 02:03）：
+      //   等待期 status=1、amount=null、workStatus=2
+      //   结算那一刻 status=5、amount=59、workStatus=1
+      // 也就是说：**没接过水时 amount 是 null，表上有读数才说明真出过水**。
+      // 于是：
+      //   ① status==2 → 机器明确在出水（官方把 2 和 1/4 并列成「进程内」）
+      //   ② status==4 → 机器上按了暂停
+      //   ③ amount>0  → 表上有读数 = 接过水；读数还在涨就是在出水，
+      //                 读数连续 3 轮不动就按暂停处理
+      //   ④ 以上都不成立 → 还是「已就绪」
+      const amtMoving = (lastAmt !== null && amt > lastAmt);
+      const hasWater = amt > 0;
+      if (amtMoving) {
+        freezeTicks = 0;
+        if (!started) { started = true; sawRealSignal = true; }
+      } else if (hasWater) {
+        freezeTicks++;
       }
       lastAmt = amt;
+
+      if (st === 4) {
+        wateringNow = false;                       // 机器明确说暂停，优先级最高
+      } else if (st === 2) {
+        if (!started) { started = true; sawRealSignal = true; }
+        wateringNow = true;
+      } else if (hasWater) {
+        // 有读数：表还在走就是出水，连续 3 轮不动就当机器上按了【暂停】
+        wateringNow = freezeTicks < 3;
+      } else {
+        wateringNow = false;                       // 没读数 = 还没按【开始】，停在已就绪
+      }
+
       if (amt > baseAmount) { baseAmount = amt; everGrew = true; }   // 基线只进不退
 
       if (wateringNow) {
@@ -1465,13 +1453,13 @@ async function startWater() {
         setRing(Math.min(95, 12 + waterTicks * 3));
       }
 
-      if (endedByStatus || fault) break;         // 机器收口 / 故障
-      // workStatus 离开 2 = 机器上按了结算。这是 v1.0.x 的收口判据，可靠。
-      if (!active && seenRunning) break;
-      if (!seenRunning) {
-        // 还没出水，这一轮仍在等用户按【开始】
-        if (active) sawActive = true;
-        else if (sawActive || ws !== WORK_IDLE) break;
+      if (endedByStatus) break;                  // 机器已经结算收口（status 3/5）
+      // workStatus 回到 1 = 这一单结束了。真机数据里它就是「有没有正在进行的单」：
+      // 解锁前 1，解锁后 2，结算后回 1。出过水之后回到 1 就是用户按了【结算】。
+      if (started && !active) break;
+      if (!started) {
+        // 还在等用户按【开始】。只数时间，不再看别的字段 ——
+        // 真机上等待期 status 恒为 1、workStatus 恒为 2，没有别的变化可看。
         if (++waitTicks > START_WAIT_TICKS) break;
       }
       if (ticks > 600) break;

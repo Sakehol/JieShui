@@ -49,9 +49,9 @@ const MOCK = `
       if (!window.__pressAt) {
         // workStatus 0 = 阀已开、用户还没按【开始】（v1.0.7 语义）。不能写 2 ——
         // 写 2 就等于机器已经在出水，「已就绪」这一态会被整个吃掉。
-        data = {workStatus:0, identify:'IDENTIFY_A', amount:'0', status:1};  // status1=已解锁，等用户按【开始】
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};  // status1=已解锁，等用户按【开始】
       } else if (!window.__finishAt) {
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:2};  // status2=正在出水
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:2};  // status2=正在出水
       } else {
         data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:3};  // status3=本单结束
         if (!window.__settleAt) window.__settleAt = Date.now();
