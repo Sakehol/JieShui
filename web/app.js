@@ -24,11 +24,18 @@ const LS_REMEMBER = 'qk_remember';
 let memToken = '';
 
 const Store = {
-  get remember() { return localStorage.getItem(LS_REMEMBER) === '1'; },
+  /* 默认「记住」：以前默认不记住，结果每次重开都要重新登录，而设置里那个开关
+     几乎没人发现。现在登录页第一屏就能看到并改掉它（公用设备请取消勾选）。
+     一旦用户显式选过，就以存下来的值为准。 */
+  get remember() {
+    const v = localStorage.getItem(LS_REMEMBER);
+    return v === null ? true : v === '1';
+  },
   set remember(v) {
-    if (v) localStorage.setItem(LS_REMEMBER, '1');
-    else localStorage.removeItem(LS_REMEMBER);
-    // 关掉「记住登录」时，把已经落盘的 token 立刻清掉
+    // 必须写 '0' 而不是删掉这个键 —— 删掉会退回「默认记住」，
+    // 用户明明取消勾选了，下次打开却又被记住了。
+    localStorage.setItem(LS_REMEMBER, v ? '1' : '0');
+    // 关掉「记住登录」时，把已经落盘的 token 立刻清掉（内存里那份留着，别当场踢下线）
     if (!v) localStorage.removeItem(LS_TOKEN);
   },
   get token() {
@@ -46,9 +53,9 @@ const Store = {
         localStorage.removeItem(LS_TOKEN);
         return;
       }
-      // 默认只写 sessionStorage（关标签页即失效）；勾了「记住登录」才写 localStorage
+      // 勾了「记住登录」才写 localStorage，否则只写 sessionStorage（关标签页即失效）
       sessionStorage.setItem(SS_TOKEN, memToken);
-      if (localStorage.getItem(LS_REMEMBER) === '1') localStorage.setItem(LS_TOKEN, memToken);
+      if (Store.remember) localStorage.setItem(LS_TOKEN, memToken);
       else localStorage.removeItem(LS_TOKEN);
     } catch (_) { /* 隐私模式下 storage 可能不可用，退化为纯内存 */ }
   },
@@ -338,6 +345,9 @@ async function doLogin() {
       }
       throw new ApiError('登录失败：服务器未返回 token');
     }
+    // 必须先落「记住登录」的选择，再写 token —— Store.token 的 setter 靠它
+    // 决定写 localStorage 还是只写 sessionStorage。
+    applyRememberChoice();
     Store.token = token;
     Store.phone = phone;
     enterApp();
@@ -348,9 +358,19 @@ async function doLogin() {
   }
 }
 
+/** 把登录页那个「记住登录」勾选框的结果落盘，并同步设置页里的同名开关。 */
+function applyRememberChoice() {
+  const g = $('#rememberGate');
+  if (!g) return;
+  Store.remember = !!g.checked;
+  const rb = $('#remember');
+  if (rb) rb.checked = !!g.checked;
+}
+
 function useToken() {
   const t = $('#tokenInput').value.trim();
   if (t.length < 10) return toast('Token 看起来不正确', true);
+  applyRememberChoice();
   Store.token = t;
   enterApp();
 }
@@ -370,6 +390,8 @@ function enterApp() {
   $('#autoStart').checked = Store.autoStart;
   const rb = $('#remember');
   if (rb) rb.checked = Store.remember;
+  const rg = $('#rememberGate');
+  if (rg) rg.checked = Store.remember;
   renderDevices();
   refreshQuotaBadge();
   cacheGeo();
@@ -1654,7 +1676,16 @@ function bind() {
     if (e.target.checked && Store.token) {
       try { localStorage.setItem(LS_TOKEN, Store.token); } catch (_) { }
     }
+    // 两个开关是同一个状态，别让登录页那个还显示旧值
+    const rg = $('#rememberGate');
+    if (rg) rg.checked = e.target.checked;
     toast(e.target.checked ? '已记住登录（仅本机）' : '已取消记住，关闭标签页后需重新登录');
+  };
+  const rgGate = $('#rememberGate');
+  if (rgGate) rgGate.onchange = (e) => {
+    // 登录页还没写 token，只是先把选择记下来；真正落盘在 doLogin / useToken 里
+    Store.remember = e.target.checked;
+    if (rb) rb.checked = e.target.checked;
   };
 
   /* 查看 / 复制完整 token：模拟器或另一台设备上直接粘贴登录 */
@@ -1700,6 +1731,12 @@ function bind() {
 function boot() {
   bind();
   setRing(0);
+
+  // 登录页那个「记住登录」默认值要与已保存的选择一致（新用户默认勾上）
+  const rg = $('#rememberGate');
+  if (rg) rg.checked = Store.remember;
+  const rb0 = $('#remember');
+  if (rb0) rb0.checked = Store.remember;
 
   if (Store.token) {
     enterApp();

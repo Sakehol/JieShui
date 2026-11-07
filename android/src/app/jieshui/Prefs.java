@@ -31,15 +31,54 @@ public final class Prefs {
         return c.getSharedPreferences(FILE, Context.MODE_PRIVATE);
     }
 
+    /** 进程内有效的 token：关掉「记住登录」时用，不落盘 */
+    private static volatile String memToken = null;
+
+    /**
+     * 默认开启 —— 和网页端保持一致，也和以前的行为一致（以前总是记住）。
+     * 关掉之后 token 只活在本次进程里，退出 App 就要重新登录。
+     */
+    public static boolean remember(Context c) {
+        return sp(c).getBoolean("remember", true);
+    }
+
+    public static void setRemember(Context c, boolean v) {
+        sp(c).edit().putBoolean("remember", v).apply();
+        if (!v) {
+            // 从「记住」切到「不记住」：把已落盘的 token 挪进内存再删盘上那份。
+            // 直接删掉会把人当场踢下线 —— 用户想改的是「下次」，不是「现在」。
+            String persisted = Secure.decrypt(c, sp(c).getString("token", ""));
+            if (!persisted.isEmpty()) memToken = persisted;
+            sp(c).edit().remove("token").apply();
+        } else {
+            // 反过来：开回来时把内存里的 token 落盘，否则下次启动又要重登
+            String m = memToken;
+            if (m != null && !m.isEmpty()) {
+                sp(c).edit().putString("token", Secure.encrypt(c, m)).apply();
+                memToken = null;
+            }
+        }
+    }
+
     public static String token(Context c) {
+        // 不记住登录时 token 只在这个进程里，内存优先
+        String m = memToken;
+        if (m != null) return m;
         return Secure.decrypt(c, sp(c).getString("token", ""));
     }
 
     public static void setToken(Context c, String v) {
         if (v == null || v.isEmpty()) {
+            memToken = null;
             sp(c).edit().remove("token").apply();
-        } else {
+            return;
+        }
+        if (remember(c)) {
+            memToken = null;
             sp(c).edit().putString("token", Secure.encrypt(c, v)).apply();
+        } else {
+            memToken = v;
+            sp(c).edit().remove("token").apply();
         }
     }
 

@@ -17,6 +17,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.CheckBox;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -62,6 +63,8 @@ public class MainActivity extends Activity {
     private volatile int sessionSeq = 1;
     private TextView actionBtn;
     private TextView topTitle;
+    /** 首页右上角的「小票 ¥x.xx」。与网页端顶栏那个徽标同源（user/balance 的 tokenCoin）。 */
+    private TextView quotaBadge;
     private TextView stateTitle, stateSub, flowAmount;
     private Ui.RingView ring;
     private LinearLayout flowLine;
@@ -179,6 +182,23 @@ public class MainActivity extends Activity {
         topTitle = left;
         bar.addView(left, Ui.lpw(1f));
 
+        // 首页顶栏右侧的小票徽标。只有首页同时带「设置」齿轮，所以用它当判据 ——
+        // 设备页/结算页各有自己的信息，再塞一个余额进去只会把窄顶栏挤爆。
+        if (showSettings) {
+            quotaBadge = Ui.text(this, "", 12, Prefs.C_OK, true);
+            quotaBadge.setGravity(Gravity.CENTER);
+            quotaBadge.setBackground(Ui.round(0x1A2ECC8F, 11, 0x382ECC8F, 1, this));
+            quotaBadge.setPadding(Ui.dp(this, 10), Ui.dp(this, 5), Ui.dp(this, 10), Ui.dp(this, 5));
+            quotaBadge.setVisibility(View.GONE);
+            LinearLayout.LayoutParams qlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            qlp.rightMargin = Ui.dp(this, 6);
+            bar.addView(quotaBadge, qlp);
+        } else {
+            // 换页后旧徽标已经不在视图树上了，别让后台回来的余额往上写
+            quotaBadge = null;
+        }
+
         if (showBack) {
             TextView back = Ui.text(this, "✕", 20, Prefs.C_FG2, false);
             back.setPadding(Ui.dp(this, 10), Ui.dp(this, 4), Ui.dp(this, 10), Ui.dp(this, 4));
@@ -270,6 +290,37 @@ public class MainActivity extends Activity {
         });
         Ui.pressable(login);
         phoneBox.addView(login);
+
+        /* 记住登录：以前只有设置里能改，而多数人根本不知道设置里有这一项 ——
+           于是要么被迫每次重新登录，要么在公用设备上莫名一直开着。
+           放在登录按钮下面，是「登录」这个动作本身的一部分。 */
+        LinearLayout rememberRow = Ui.row(this);
+        final boolean[] remember = {Prefs.remember(this)};
+        CheckBox rememberBox = new CheckBox(this);
+        rememberBox.setChecked(remember[0]);
+        rememberBox.setButtonTintList(android.content.res.ColorStateList.valueOf(Prefs.C_ACCENT));
+        TextView rememberLabel = Ui.text(this,
+                "在这台设备上记住登录（公用设备请勿勾选）", 12, Prefs.C_FG2, false);
+        rememberRow.addView(rememberBox, Ui.lp(android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+        rememberRow.addView(rememberLabel, Ui.lpw(1f));
+        rememberRow.setOnClickListener(v -> {
+            boolean nv = !remember[0];
+            remember[0] = nv;
+            rememberBox.setChecked(nv);
+        });
+        Ui.pressable(rememberRow);
+        LinearLayout.LayoutParams rmlp = new LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        rmlp.topMargin = Ui.dp(this, 10);
+        phoneBox.addView(rememberRow, rmlp);
+
+        // 勾选状态在真正写 token 之前落盘，这样 Prefs.setToken 才知道该不该加密保存
+        rememberBox.setOnCheckedChangeListener((btn2, checked) -> {
+            remember[0] = checked;
+            Prefs.setRemember(this, checked);
+        });
 
         LinearLayout tokenBox = Ui.column(this);
         EditText tok = input("从原 App 抓包获取的 token", InputType.TYPE_CLASS_TEXT, 4);
@@ -449,6 +500,7 @@ public class MainActivity extends Activity {
         curGoodsId = null;
         LinearLayout outer = screenShell();
         content.addView(topBar("接水", false, true));
+        loadBalance();
 
         // 扫码球
         FrameLayout orbWrap = new FrameLayout(this);
@@ -1023,6 +1075,42 @@ public class MainActivity extends Activity {
                     actionBtn.setEnabled(false);
                 }
             });
+        });
+    }
+
+    /**
+     * 首页右上角的小票余额 = user/balance 的 tokenCoin（单位：分）。
+     * 网页端顶栏那个「小票 ¥x.xx」徽标就是同一个字段，之前只有网页端有，
+     * 安卓端要进设备页才看得到 waterQuota 的文案，首页一直是空白。
+     */
+    private void loadBalance() {
+        final TextView badge = quotaBadge;
+        if (badge == null) return;
+        badge.setText("");
+        badge.setVisibility(View.GONE);
+        pool.execute(() -> {
+            try {
+                Object d = Api.call("user/balance", Api.params(), Prefs.token(this));
+                double cents = -1;
+                if (d instanceof JSONObject) {
+                    JSONObject o = (JSONObject) d;
+                    if (o.has("tokenCoin")) cents = o.optDouble("tokenCoin", -1);
+                }
+                final double c = cents;
+                ui.post(() -> {
+                    // 换页后这个 badge 已经不在屏幕上了，别再往上写
+                    if (quotaBadge != badge) return;
+                    if (!(c > 0)) return;
+                    badge.setText("小票 ¥" + String.format(java.util.Locale.US, "%.2f", c / 100.0));
+                    badge.setVisibility(View.VISIBLE);
+                });
+            } catch (Api.ApiException e) {
+                if (e.code == 2) {
+                    Prefs.setToken(this, "");
+                    ui.post(() -> showGate("登录已过期，请重新登录"));
+                }
+                // 其余错误静默：余额只是锦上添花，失败了不该打断接水
+            }
         });
     }
 
@@ -1626,6 +1714,34 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         alp.topMargin = Ui.dp(this, 6);
         box.addView(autoRow, alp);
+
+        // 记住登录也应该能在设置里改（登录页那个勾选框决定默认值）
+        LinearLayout remRow = Ui.row(this);
+        TextView remLabel = Ui.text(this, "记住登录", 15, Prefs.C_FG, false);
+        TextView remVal = Ui.text(this, Prefs.remember(this) ? "已开启" : "已关闭", 14,
+                Prefs.remember(this) ? Prefs.C_ACCENT : Prefs.C_FG2, true);
+        remRow.addView(remLabel, Ui.lpw(1f));
+        remRow.addView(remVal);
+        remRow.setBackground(Ui.round(Prefs.C_INPUT, 12, Prefs.C_LINE, 1, this));
+        remRow.setPadding(Ui.dp(this, 14), Ui.dp(this, 13), Ui.dp(this, 14), Ui.dp(this, 13));
+        remRow.setOnClickListener(v -> {
+            boolean nv = !Prefs.remember(this);
+            Prefs.setRemember(this, nv);
+            remVal.setText(nv ? "已开启" : "已关闭");
+            remVal.setTextColor(nv ? Prefs.C_ACCENT : Prefs.C_FG2);
+            if (nv) {
+                // 重新开启时把当前 token 落盘（它此前只活在内存里）
+                String tk = Prefs.token(this);
+                if (!tk.isEmpty()) Prefs.setToken(this, tk);
+            } else {
+                toast(this, "已关闭，下次打开需重新登录");
+            }
+        });
+        Ui.pressable(remRow);
+        LinearLayout.LayoutParams rlp2 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp2.topMargin = Ui.dp(this, 6);
+        box.addView(remRow, rlp2);
 
         box.addView(Ui.spacer(this), Ui.lp(1, Ui.dp(this, 20)));
         TextView logout = Ui.text(this, "退出登录", 14, Prefs.C_ERR, true);
