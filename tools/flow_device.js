@@ -56,13 +56,15 @@ const MOCK = `
 })();
 `;
 
-module.exports = async (page, { sleep }) => {
+module.exports = async (page, { sleep, url }) => {
   await page.S('Page.addScriptToEvaluateOnNewDocument', { source: MOCK });
   await page.evaluate(`localStorage.setItem('qk_token','mocktoken_0123456789abcdef'); localStorage.setItem('qk_phone','13800138000'); localStorage.setItem('qk_auto','0'); localStorage.setItem('qk_devices', JSON.stringify([
     {goodsId:'10001', name:'3号饮水机', imei:'NQT2024001', shopId:'88', categoryCode:'04', shopName:'学生公寓 3 栋'}
   ])); 'ok'`);
 
-  await page.S('Page.navigate', { url: 'http://127.0.0.1:8899/index.html' });
+  // 别写死本地地址：对着线上跑时若硬编码 localhost，跨源会把 localStorage 清掉，
+  // 用例"通过"但测的其实是没 mock 的本地页（这个坑流过血）。
+  await page.S('Page.navigate', { url: url || 'http://127.0.0.1:8899/index.html' });
   await sleep(1200);
   await page.shot(shot('home2.png'));
 
@@ -73,8 +75,8 @@ module.exports = async (page, { sleep }) => {
 
   const state = await page.evaluate(`({title:document.querySelector('#stateTitle').textContent, meta:document.querySelector('#devMeta').textContent, skuCards:document.querySelectorAll('.sku').length, hasSkuList:!!document.querySelector('#skuList'), quota:document.querySelector('#quotaLine').textContent})`);
 
-  // 开始接水
-  await page.click('#actionBtn');
+  // 设备页现在**自动开阀**，不再有「开始接水」这个假按钮（服务端没有开阀接口，
+  // 点了也不会出水）。这里只等 mock 把机器推到结算。
   await sleep(2600);
   await page.shot(shot('flowing.png'));
 

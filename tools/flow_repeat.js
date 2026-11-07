@@ -36,6 +36,10 @@ const MOCK = `
     const path = String(url).replace('https://userapi.qiekj.com/','');
     if (path === 'goods/water/unlock') {
       unlockCount++; window.__calls.push(path);
+      // 每次开阀都是一轮全新的接水：水位计数必须清零，否则第二轮一上来就是
+      // workStatus:3（已完成），会立刻跳出等待期，测出来的东西全是假的。
+      syncTicks = 0;
+      window.__settleAt = 0;
       await new Promise(r=>setTimeout(r,50));
       return J({msgId:'m_'+unlockCount, orderNo:'QK'+unlockCount});
     }
@@ -74,12 +78,28 @@ const MOCK = `
 module.exports = async (page, { sleep, url }) => {
   const out = {};
   const base = url || 'http://127.0.0.1:8899/index.html';
-  const snap = `({
-    screen:[...document.querySelectorAll('.screen')].filter(e=>!e.classList.contains('hidden')).map(e=>e.id),
-    btn:document.querySelector('#actionBtn').textContent,
-    btnDisabled:document.querySelector('#actionBtn').disabled,
-    state:document.querySelector('#stateTitle').textContent
-  })`;
+  // 空值安全：页面被导航走时要能看出来，而不是直接抛
+  const snap = `(() => {
+    const b = document.querySelector('#actionBtn');
+    return {
+      href: location.href,
+      hstate: JSON.stringify(history.state),
+      screen:[...document.querySelectorAll('.screen')].filter(e=>!e.classList.contains('hidden')).map(e=>e.id),
+      btn: b ? b.textContent : null,
+      btnDisabled: b ? b.disabled : null,
+      state: (document.querySelector('#stateTitle')||{}).textContent || null
+    };
+  })()`;
+  const waitFor = async (expr, ms) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      let v = null;
+      try { v = await page.evaluate(expr); } catch (_) {}
+      if (v) return true;
+      await sleep(200);
+    }
+    return false;
+  };
   try {
     await page.S('Page.addScriptToEvaluateOnNewDocument', { source: MOCK });
     await page.evaluate(`localStorage.setItem('qk_token','mocktoken_0123456789abcdef'); localStorage.setItem('qk_phone','13800138000'); localStorage.setItem('qk_auto','0'); localStorage.setItem('qk_devices', JSON.stringify([
@@ -88,41 +108,41 @@ module.exports = async (page, { sleep, url }) => {
     await page.S('Page.navigate', { url: base });
     await sleep(1200);
 
-    // ---- 第一轮 ----
+    // ---- 第一轮：设备页自动开阀 → mock 把机器推到结算 ----
     await page.click('.device');
-    await sleep(900);
-    await page.click('#actionBtn');
-    await sleep(6000);
-
+    // 等结算页真的出来（mock 三次 sync 后 done，约 3.6 秒）
+    const reachedResult = await waitFor(
+      `!!document.querySelector('#result') && !document.querySelector('#result').classList.contains('hidden')`, 20000);
+    out.reachedResult = reachedResult;
     out.round1 = await page.evaluate(snap);
-    // 只看「水已经停了」之后的采样：这段时间按钮必须是「结算中…/off」
+
+    // 水停了之后按钮不能还挂着「结束接水」
     out.afterSettle = await page.evaluate(`(() => {
       const at = window.__settleAt || 0;
       const logs = (window.__btnLog||[]).filter(x => x.t >= at);
       const firstSettling = logs.find(x => x.text !== '结束接水');
       return {
         samples: logs.length,
-        texts: [...new Set(logs.map(x => x.text + (x.disabled ? '/off' : '/ON')))],
+        texts: [...new Set(logs.map(x => x.text + (x.disabled ? '/off' : '/ON')))].slice(0, 8),
         staleStopBtn: logs.filter(x => x.text === '结束接水').length,
-        // 水停 → 按钮变成「结算中…」的延迟（含 mock 的 80ms 网络延时）
         switchDelayMs: firstSettling ? firstSettling.t - at : null
       };
     })()`);
 
-    // ---- 结算页按返回 = 回首页 ----
-    await page.evaluate(`history.back(); 'ok'`);
-    await sleep(700);
+    // ---- 结算页按返回：栈是 home → device → result，一步就该回首页 ----
+    await page.evaluate(`setTimeout(function(){history.back();},0); 'ok'`);
+    await sleep(900);
     out.afterBack = await page.evaluate(snap);
 
     // ---- 从首页立刻再开一次 ----
-    await page.evaluate(`window.__calls.length = 0; 'ok'`);
+    await page.evaluate(`window.__calls && (window.__calls.length = 0); 'ok'`);
     await page.click('.device');
-    await sleep(900);
-    await page.click('#actionBtn');
-    await sleep(6000);
+    const reached2 = await waitFor(
+      `!!document.querySelector('#result') && !document.querySelector('#result').classList.contains('hidden')`, 20000);
+    out.reachedResult2 = reached2;
     out.round2 = await page.evaluate(
       `({screen:[...document.querySelectorAll('.screen')].filter(e=>!e.classList.contains('hidden')).map(e=>e.id),
-         rows:document.querySelector('#resultRows').textContent,
+         rows:(document.querySelector('#resultRows')||{}).textContent,
          unlocks:(window.__calls||[]).filter(c=>c==='goods/water/unlock').length})`
     );
     await page.shot(shot('repeat-round2.png'));

@@ -48,8 +48,8 @@ MOCK_BLOCK = r'''
                 if (mockSyncTicks <= 2) {
                     return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":0}}";
                 }
-                if (mockSyncTicks < 40) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":0}}";
+                if (mockSyncTicks < 6) {
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"" + (60 * mockSyncTicks) + "\",\"status\":1}}";
                 }
                 return "{\"code\":0,\"data\":{\"workStatus\":3,\"identify\":\"QK202411050001\",\"amount\":\"186\",\"status\":2}}";
             case "payChannelRoute/addUserAfterPayChannel":

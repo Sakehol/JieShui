@@ -68,13 +68,6 @@ public class MainActivity extends Activity {
     private TextView stateTitle, stateSub, flowAmount;
     private Ui.RingView ring;
     private LinearLayout flowLine;
-    /** 对应机器面板【暂停】【结算】【取消】的那一排。 */
-    /**
-     * 用户点过手机上的「开始接水」没有。点了就先把界面切到「接水中」，让这个动作
-     * 立刻有反馈；但**是否真的出水**仍然只看 sync.amount 增长，所以这个标记
-     * 不能当成 seenRunning 用 —— 否则用户点了按钮却一直没去机器上按开始，
-     * 最后会被当成"接过水"，去建一张 0 元废单。
-     */
 
     @Override
     protected void onCreate(Bundle b) {
@@ -779,8 +772,8 @@ public class MainActivity extends Activity {
                 final String shopId = o.optString("shopId", "");
                 final String catName = o.optString("categoryName", "");
                 hideLoading();
-                // 扫码进来的：进设备页后直接开阀，省掉「再点一次开始接水」
-                ui.post(() -> openDevice(id, catName, "", shopId, cat, "", true));
+                // 扫码进来：进设备页后直接开阀解锁
+                ui.post(() -> openDevice(id, catName, "", shopId, cat, ""));
             } catch (Api.ApiException e) {
                 hideLoading();
                 ui.post(() -> toast(this, e.getMessage()));
@@ -791,11 +784,6 @@ public class MainActivity extends Activity {
     /* ================= 设备页 ================= */
 
     private void openDevice(String goodsId, String name, String imei, String shopId, String category, String org) {
-        openDevice(goodsId, name, imei, shopId, category, org, false);
-    }
-
-    private void openDevice(String goodsId, String name, String imei, String shopId, String category,
-                            String org, boolean autoStart) {
         curGoodsId = goodsId;
         curName = name;
         curImei = imei;
@@ -847,9 +835,9 @@ public class MainActivity extends Activity {
 
         LinearLayout ringText = Ui.column(this);
         ringText.setGravity(Gravity.CENTER);
-        stateTitle = Ui.title(this, "准备就绪", 17);
+        stateTitle = Ui.title(this, "正在连接", 17);
         stateTitle.setGravity(Gravity.CENTER);
-        stateSub = Ui.text(this, "点击下方按钮开始接水", 12, Prefs.C_FG2, false);
+        stateSub = Ui.text(this, "正在获取设备信息…", 12, Prefs.C_FG2, false);
         stateSub.setGravity(Gravity.CENTER);
         ringText.addView(stateTitle);
         ringText.addView(stateSub);
@@ -869,7 +857,7 @@ public class MainActivity extends Activity {
         fllp.topMargin = Ui.dp(this, 12);
         ctrl.addView(flowLine, fllp);
 
-        actionBtn = Ui.primaryButton(this, "开始接水");
+        actionBtn = Ui.primaryButton(this, "正在连接…");
         actionBtn.setEnabled(false);
         actionBtn.setOnClickListener(v -> {
             // 已就绪时按钮写「取消」，接水中/暂停时写「结束接水」，结算中是禁用态。
@@ -984,17 +972,14 @@ public class MainActivity extends Activity {
                     stateSub.setText(fse == null ? "该设备暂无可用计费方式" : fse);
                     actionBtn.setText("重新加载");
                     actionBtn.setEnabled(true);
-                } else if (autoStart) {
-                    // 扫码进来的直接开阀：官方 App 扫完码机器立刻认到人，
-                    // 用户在机器上按「开始」就有水，中间不需要再点一次手机。
+                } else {
+                    // 两个入口（扫码、点历史设备）都走这里：直接开阀解锁。
+                    // 以前历史设备入口走的是另一套「准备就绪 / 点击按钮开始」文案，
+                    // 那个按钮点了只会在本地再发一次 unlock —— 服务端没有开阀接口，
+                    // 水根本不会出。设备页从这天起只如实反映机器状态，不再提供假按钮。
                     stateTitle.setText("正在启动");
                     stateSub.setText("下发开阀指令…");
                     startWater();
-                } else {
-                    stateTitle.setText("准备就绪");
-                    stateSub.setText("点击下方按钮开始接水");
-                    actionBtn.setText("开始接水");
-                    actionBtn.setEnabled(true);
                 }
 
                 loadQuota(quota);
@@ -1076,10 +1061,11 @@ public class MainActivity extends Activity {
                 curSkuId = null;
                 pickSku();
                 if (curSkuId != null) {
-                    stateTitle.setText("准备就绪");
-                    stateSub.setText("点击下方按钮开始接水");
-                    actionBtn.setText("开始接水");
-                    actionBtn.setEnabled(true);
+                    // 计费方式拿到了，立刻接着开阀 —— 和扫码入口一样，设备页不需要
+                    // 用户再点一次手机上的按钮（点了也不会出水）。
+                    stateTitle.setText("正在启动");
+                    stateSub.setText("下发开阀指令…");
+                    startWater();
                 } else {
                     stateTitle.setText("无法开始");
                     stateSub.setText("计费方式信息不完整");

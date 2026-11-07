@@ -1036,7 +1036,7 @@ async function handleScanned(text) {
       return;
     }
     hideScreenLoading();
-    await openDevice({ goodsId: res.id, categoryCode: cat, shopId: res.shopId, name: res.categoryName }, true);
+    await openDevice({ goodsId: res.id, categoryCode: cat, shopId: res.shopId, name: res.categoryName });
   } catch (e) {
     hideScreenLoading();
     toast(e.message, true);
@@ -1059,7 +1059,7 @@ function hideScreenLoading() { if (screenLoading) screenLoading.classList.add('h
 /* ---------------- 设备详情 ---------------- */
 let current = null;
 
-async function openDevice(dev, auto) {
+async function openDevice(dev) {
   // 换设备立刻作废上一轮会话。
   // 不这么做的话，等待期扫第二台机器时旧的这一轮还占着 busy，
   // 新一轮的 startWater() 会被「正在处理，请稍候」挡回去 ——
@@ -1119,13 +1119,10 @@ async function openDevice(dev, auto) {
     } else if (!current.sku || !current.sku.skuId) {
       setState('无法开始', '该设备暂无可用计费方式');
       $('#actionBtn').disabled = true;
-    } else if (auto) {
-      // 扫码进来的：直接开阀。官方 App 也是这样 —— 扫完码机器立刻认到人，
-      // 用户在机器上按「开始」就有水，中间不需要再点一次手机。
-      startWater();
     } else {
-      $('#actionBtn').disabled = false;
-      setState('准备就绪', '点击下方按钮开始接水');
+      // 历史设备入口和扫码入口一样：直接开阀解锁。设备页不再提供「开始接水」这种
+      // 点了也不会出水的按钮 —— 服务端根本没有开阀接口（12 个 dex 穷举过）。
+      startWater();
     }
 
     loadQuota();
@@ -1228,9 +1225,10 @@ async function startWater() {
       $('#actionBtn').disabled = false;
       return;
     }
-    setState('准备就绪', '点击下方按钮开始接水');
-    $('#actionBtn').textContent = '开始接水';
-    $('#actionBtn').disabled = false;
+    setState('正在连接', '正在获取设备信息…');
+    $('#actionBtn').textContent = '正在连接…';
+    $('#actionBtn').disabled = true;
+    startWater();
     return;
   }
   busy = true;
@@ -1558,11 +1556,13 @@ async function stopWater() {
 function resetDevicePanel() {
   const btn = $('#actionBtn');
   if (btn) {
-    btn.textContent = '开始接水';
-    btn.disabled = !(current && current.sku && current.sku.skuId);
+    // 设备页只剩「取消 / 结束接水」，没有「开始接水」——
+    // 服务端没有开阀接口，做出来也是点了不出水的假按钮。
+    btn.textContent = '正在连接…';
+    btn.disabled = true;
   }
   setRing(0);
-  setState('准备就绪', '点击下方按钮开始接水');
+  setState('正在连接', '正在获取设备信息…');
   const fl = $('#flowLine');
   if (fl) fl.classList.add('hidden');
   const fa = $('#flowAmount');
