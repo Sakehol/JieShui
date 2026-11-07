@@ -58,12 +58,12 @@ MOCK_BLOCK = r'''
                 // status=2，seenRunning 被置位，这一档就永远测不到取消。
                 if (MOCK_CANCEL) {
                     if (mockSyncTicks <= 3) {
-                        return "{\"code\":0,\"data\":{\"workStatus\":0,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
+                        return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
                     }
                     return "{\"code\":0,\"data\":{\"workStatus\":3,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":3}}";
                 }
                 if (mockSyncTicks <= 2) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":0,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
                 }
                 // 暂停档要先把「按开始出水」这一段走完，否则 seenRunning 还是 false，
                 // 代码里 `st == 4 && seenRunning` 这一支永远进不去 —— 测出来的

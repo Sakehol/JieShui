@@ -1210,20 +1210,27 @@ public class MainActivity extends Activity {
                 boolean everGrew = false;  // 整个会话 amount 涨过基线没有
                 int stillTicks = 0;        // 连续多少轮没出水，用来在没有 status 时猜暂停
                 boolean pausedShown = false;
-                // 面板状态（sync.status）。每次变化 = 机器面板上被按了一下。
+                // 面板状态（sync.status）。每次确认到变化 = 机器面板上被按了一下。
                 // 只数「变了没有」，不猜具体取值：dex 里除了 3/5/6 之外的值
                 // 官方都只当"继续等"，没有单独语义。
-                int prevSt = -99;          // -99 = 还没看到过
-                int panelChanges = 0;
+                int waterPhase = 0;        // 开始之后确认过几次按键：1=开始，2=暂停，3=继续
                 boolean wateringNow = false;   // 当前是否在出水
-                // 解锁那一刻的快照。之后拿它当基准，看哪个字段「动过」。
-                double baseAmount = -1;    // -1 表示还没取到
-                int baseWs = -99;
-                int initialSt = -99;
-                String initialId = "";
-                boolean idInit = false;
+                // 出水判定不认任何具体取值，只认「面板被按了一下，返回的东西就变一次」。
+                // 做法是「新值必须连着两轮 sync 都一样才算数」——解锁后服务端刚
+                // 要登记这一单时自己会抖一下，那一下不能当用户按键。
+                String baseSig = null;     // 确认下来的签名（status|workStatus）
+                String pendSig = null;     // 还没确认的新签名
+                double lastAmt = -1;       // 上一轮的 amount
+                int grewStreak = 0;        // amount 连续涨了几轮
+                int freezeTicks = 0;       // amount 连续几轮不动（判暂停）
                 boolean started = false;   // 用户已经在机器上按过【开始】
                 boolean sawRealSignal = false;   // 见过真信号，用来判断有没有接过水
+                // 下面几个只给「已就绪」文案和调试用，不参与判定
+                double baseAmount = -1;
+                int baseWs = -99;
+                int initialSt = -99;
+                String initialId = "";     // 解锁那一刻的 identify（多半是空的）
+                boolean idInit = false;
                 final int START_WAIT_TICKS = 75;   // 约 90 秒等用户按机器上的开始
                 while (true) {
                     if (stopRequested) {
@@ -1293,44 +1300,79 @@ public class MainActivity extends Activity {
                     boolean fault = hasSt && st == 6;
 
                     // 第一轮 sync 一定发生在「刚解锁、用户还没按机器上的【开始】」的时候，
-                    // 拿它当基准快照：之后只要三个字段里任何一个跟它不一样，
-                    // 就说明面板被按了。
-                    if (baseAmount < 0) {
+                    // 拿它当基准快照，本身不算一次按键。
+                    String stKey = hasSt ? String.valueOf(st) : "x";
+                    String wsKey = String.valueOf(ws);
+                    String sig = stKey + "|" + wsKey;
+                    if (baseSig == null) {
+                        baseSig = sig;
                         baseAmount = amt;
                         baseWs = ws;
                         initialSt = st;
                         initialId = str(sync, "identify");
                         idInit = true;
+                        lastAmt = amt;
                     }
+                    String idNow = str(sync, "identify");
+
+                    // ── 出水判定 ─────────────────────────────────────────────
+                    // 官方 dex 里 LockingAct 开锁后就是拿 workStatus 分流：
+                    //   1 → 另一条路   2 → 直接进 StartStatusAct（接水中）   3 → toast「设备工作中」
+                    // 也就是说 workStatus == 2 就是「这一单已经开始了」。
+                    // 但真机上解锁完它就是 2 ——「已就绪」和「接水中」在它上面分不开，
+                    // 这正是 v1.1.4 一解锁就跳接水中、而等 0→2 那次变化又等不到的原因。
+                    //
+                    // 能分开二者的只剩「面板被按了一下，返回的东西就变一次」：
+                    //   · status / workStatus 的签名变了（连两轮一样才认，滤掉解锁抖动）
+                    //   · amount 连续两轮在涨（表在走 = 一定在出水）
+                    // 第一次确认 = 按了【开始】；再确认一次 = 【暂停】；再一次 = 【继续】。
+                    if (!sig.equals(baseSig)) {
+                        if (sig.equals(pendSig)) {
+                            baseSig = sig;
+                            pendSig = null;
+                            waterPhase++;
+                            // 第 1 次确认 = 按了【开始】（出水）；第 2 次 = 【暂停】；第 3 次 = 【继续】
+                            if (!started) {
+                                started = true;
+                                sawRealSignal = true;
+                                wateringNow = true;
+                            } else {
+                                wateringNow = waterPhase % 2 == 1;
+                            }
+                        } else {
+                            pendSig = sig;
+                        }
+                    } else {
+                        pendSig = null;
+                    }
+
+                    // identify 从「没有」变成「有」：解锁那一刻它还空着，机器记上这一单才有值。
+                    if (!started && idInit && initialId.isEmpty() && !idNow.isEmpty()) {
+                        started = true;
+                        sawRealSignal = true;
+                        wateringNow = true;
+                    }
+
+                    if (lastAmt >= 0 && amt > lastAmt) {
+                        grewStreak++;
+                        if (grewStreak >= 2) {
+                            if (!started) {
+                                started = true;
+                                sawRealSignal = true;
+                                wateringNow = true;
+                            }
+                            freezeTicks = 0;
+                        }
+                    } else {
+                        grewStreak = 0;
+                        if (started && wateringNow && everGrew && !endedByStatus && !fault) {
+                            if (++freezeTicks >= 3) wateringNow = false;   // 表不动了 = 暂停
+                        }
+                    }
+                    lastAmt = amt;
                     if (amt > baseAmount) {          // 基线只进不退
                         baseAmount = amt;
                         everGrew = true;
-                    }
-
-                    // ── 出水判定 ─────────────────────────────────────────────
-                    // 就按 v1.0.7 的规则来，那是真机上唯一被验证过有效的：
-                    //   workStatus 0/1 = 阀已开、用户还没按机器上的【开始】 → 已就绪
-                    //   workStatus 2   = 机器正在出水                        → 接水中
-                    // v1.0.8 我误信了自己写在 mock 注释里的「真机解锁后 workStatus 就是 2」，
-                    // 把它换成 amount>0；v1.1.3 又换成 status==2。两次都是拿臆测去否定
-                    // workStatus，于是页面从此再也进不了「接水中」——用户反复报的就是这个。
-                    // 宁可「已就绪」短一点，也不能把状态卡死。
-                    wateringNow = active;
-                    if (active) {
-                        started = true;
-                        sawRealSignal = true;   // workStatus==2 = 机器真的在出水
-                    }
-
-                    // 暂停 / 继续：出水之后面板再被按一次就翻转一次。
-                    // 只数「变了没有」，不认具体取值（dex 里除 3/5/6 外官方都不区分）。
-                    if (started && hasSt && !endedByStatus && !fault) {
-                        if (prevSt == -99) {
-                            prevSt = st;
-                        } else if (st != prevSt) {
-                            prevSt = st;
-                            panelChanges++;
-                        }
-                        if (panelChanges % 2 == 1) wateringNow = false;   // 奇数次 = 暂停
                     }
 
                     if (wateringNow) {
