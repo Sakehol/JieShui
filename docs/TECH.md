@@ -114,7 +114,7 @@ python tools/probe_chain.py <token>
 - **打开即扫码**：默认关闭，设置里可开（`autoStart`）——登录后直接弹相机容易打断人
 - **扫码即开阀，中间不用再点一次**：扫到饮水机二维码后，客户端直接下发 `goods/water/unlock`，
   机器立刻认到人，用户在机器上按「开始」就出水。官方 App 就是这个节奏——
-  手机上多一次「开始接水」纯属多余。设备页这时显示「已就绪 / 请在机器上按「开始」」，
+  手机上多一次「开始接水」纯属多余。设备页这时显示「已就绪 / 机器上点击【开始】接水」，
   按钮是「取消」（不想接了直接退出，不会产生订单）
 - **不显示计费方式**：饮水机只有一档，官方那行「饮水 · 起步¥1 · 最低10」对用户没意义，
   卡片已删除；`skuId` 仍在后台取到，只是不下发给用户看
@@ -243,7 +243,7 @@ APK 的扫码器（`ScanActivity.java`）是 Camera1 + ZXing。解码算法抽�
 | Referrer | `<meta name="referrer" content="no-referrer">` | token 出现在链接里时被外部站点拿到 |
 | 会话失效清理 | `sessionExpired()` 同时清 `memToken`/`sessionStorage`/`localStorage`、`#setToken` 打码值、`#tokenFull` 明文，并回登录页 | 回登录页后抽屉里还露着旧 token |
 | 导出需手动点 | 「查看并复制完整 Token」默认折叠，展开有「不要在公共电脑上开着这个框」提示 | 肩窥 / 误留在屏幕上 |
-| 诊断页不发布 | `debug.html` 已移到 `tools/debug.html`，线上 `/debug.html` 返回 404 | 线上留一个能读 token 的调试页 |
+| 诊断页不发布 | 本地诊断页已删除（`web/` 里从来没有过），线上 `/debug.html` 返回 404 | 线上留一个能读 token 的调试页 |
 
 ### Cloudflare Pages 的 `_headers`（比 meta 更完整）
 
@@ -521,30 +521,29 @@ web/              PWA（index.html / app.js / style.css / jsQR.js / sw.js）
 apk/              构建产物（jieshui.apk 真实版 / jieshui-test.apk mock 版）
 build.sh          APK 构建脚本
 build_test.sh     mock 版构建脚本
-tools/            开发辅助
+tools/            开发辅助（回归脚本 + 构建/部署工具）
   ├ probe_chain.py      用真实 token 跑只读全链路验证
   ├ token_from_mmkv.sh  从设备里读 token
   ├ mmkv_token.py       MMKV 解析
   ├ deploy.sh           部署 PWA 到 Cloudflare Pages（先跑 gen_headers.py）
   ├ gen_headers.py      生成 Cloudflare Pages 的 web/_headers（响应头版 CSP/HSTS 等）
-  ├ make_test.py        生成 mock 副本
-  ├ debug.html          诊断页（不发布，只在本机 python -m http.server 打开）
-  ├ flow_repeat.js      连续接水回归：水停后按钮必须立刻变「结算中…」，结算完按返回回首页
-  ├ flow_auto.js        扫码即开阀：没点任何按钮就下发 unlock，等待期不结算，按开始后才计量
-  ├ flow_auto_cancel.js 等待期点「取消」：要能真的退出，且不产生空订单
+  ├ make_test.py        生成 mock 副本（android_test/），别手改那份
+  ├ mkicon.py           从一张源图生成 192/512 图标
+  ├ cdp.js              自研 CDP 客户端：截图 + `flow` 子命令跑回归脚本
+  ├ flow_states.js      状态回归：已就绪不乱跳 / 点结算没接水→接水已取消+返回首页 / 接水了→结算页
+  ├ flow_auto.js        扫码即开阀：没点任何按钮就下发 unlock，等待期不结算
+  ├ flow_auto_cancel.js 等待期点【结算】：能真的退出，且不产生空订单
   ├ flow_edge.js        边界回归：结算后返回/等待期返回/unlock 失败重试/等待期掉登录/取消后重扫
   ├ flow_edge2.js       恶性 bug 回归：建单失败、始终扣款失败、断网、等待期换机器（含停水对象）
-  ├ flow_scan.js        扫码解码回归：同一张二维码在画面里变小，各档缩放下能否认出
-  ├ flow_scan_e2e.js    扫码端到端：合成画面喂给真实 tickScan，要走完到设备页
-  ├ flow_camera.js      取景几何：横/竖两种摄像头流下 object-fit 各裁掉多少
-  ├ flow_frame2.js      取景几何：六种流下画面按 contain 完整落在视口、取景框完全在画面内、scanROI = 整幅
-  ├ flow_scanshot.js    扫码页观感截图：注入合成画面，确认框外不再是纯黑
-  ├ flow_roi3.js        竖屏流端到端：码只占取景窗 14% 时能否扫出来
-  ├ flow_caps.js        摄像头能力探测：不同 constraints 实际拿到什么分辨率
-  ├ ScanCoreTest.java   APK 解码回归（JVM 直跑**生产代码** ScanCore）：旋转无关 / 能认多小的码 / 超大码 / 反色 / 整幅 vs 裁块 / 每帧成本
-  ├ ScanRoiTest.java    APK 解码回归（JVM 直跑 zxing）：早期裁块方案的耗时与限流记录（已被 ScanCoreTest 取代）
-  ├ flow_perf.js        解码开销：各尺寸下 jsQR 每帧耗时，用来定降频阈值
-  └ cdp.js / flow_*.js  无头浏览器截图与流程验证
+  ├ flow_device.js      设备页：计费方式、加后付费渠道、解锁请求体、结算明细
+  ├ flow_repeat.js      连续接水回归：水停后按钮立刻变「结算中…」，结算完按返回回首页
+  ├ flow_settle_empty.js 空结算：机器上直接结算、一滴水没接时不能建出 null 订单
+  ├ flow_home.js / flow_noscan.js / flow_sheets.js / flow_sync.js / flow_sec.js /
+  ├ flow_login.js / flow_token.js / flow_remember.js / flow_forcedbind.js
+  │                     首页 / 不自动扫码 / 小票面板 / 轮询 / 安全头 / 登录 / token 持久化 /
+  │                     「记住登录」/ 强制绑定微信的账号
+  ├ flow_capture.js     取证页冒烟（/capture 能开、按钮状态、标记行）
+  └ ScanCoreTest.java   APK 解码回归（JVM 直跑**生产代码** ScanCore）：旋转无关 / 能认多小的码 / 超大码 / 反色 / 整幅 vs 裁块 / 每帧成本
 ref/              参考实现（wzs0512/qiekj-android 的关键文件，仅作比对）
 shots/            界面截图（不入仓库）
 ```

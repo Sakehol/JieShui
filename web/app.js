@@ -1067,7 +1067,6 @@ async function openDevice(dev) {
   }
   stopRequested = false;
   leaveRequested = false;
-  watering = false;
   const me = { ...dev, detail: null, skus: [], sku: null };
   current = me;
   show('device');
@@ -1194,11 +1193,6 @@ let sessionSeq = 0;
 /* 用户点了「返回首页」/ 按了浏览器返回。和「点结算」共用 stopRequested 打断轮询，
    但收尾时走的路不一样：离开就静默停水，不弹结算页也不弹取消页。 */
 let leaveRequested = false;
-/* 水是不是真的在流。
-   v1.1.7 起不再检测「正在出水」（服务端根本不暴露，详见 startWater 里的说明），
-   所以这里永远是 false —— 用户想离开设备页随时可以走，离开时那一轮会自己停水。
-   保留这个变量是为了让 leaveDevice / popstate 的旧判断不至于炸掉。 */
-let watering = false;
 
 async function startWater() {
   // 不能静默 return —— 用户点了没反应会以为坏了，这里一律给出可见反馈
@@ -1292,7 +1286,7 @@ async function startWater() {
     //   · 点了之后先停水，再看 sync 的 amount 是不是 > 0
     //   · amount 还是 0/null → 这一单没出水，走「接水已取消」，不建单
     //   · amount > 0        → 接过水，走结算页
-    setState('已就绪', '请在机器上按【开始】，接完按下面【结算】');
+    setState('已就绪', '机器上点击【开始】接水');
     setRing(6);
     btn.textContent = '结算';
     btn.disabled = false;
@@ -1413,7 +1407,6 @@ async function startWater() {
     // 已经确认接过水，进入结算流程。按钮立刻切成不可点的「结算中…」，
     // 免得那几秒（afterPay/creating + 最多 4 次 order/sync）还挂着一个能点的键。
     stopRequested = false;
-    watering = false;
     btn.textContent = '结算中…';
     btn.disabled = true;
 
@@ -1514,7 +1507,6 @@ async function startWater() {
       busy = false;
       stopRequested = false;
       leaveRequested = false;
-      watering = false;
     }
   }
 }
@@ -1656,11 +1648,6 @@ function showResult(orderNo, orderId, detail, sync, settleState) {
 /* ---------------- 工具 ---------------- */
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-function fmtElapsed(sec) {
-  sec = Math.max(0, Math.floor(sec));
-  const m = Math.floor(sec / 60), s = sec % 60;
-  return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`;
-}
 
 /* ---------------- 事件绑定 ---------------- */
 function bind() {

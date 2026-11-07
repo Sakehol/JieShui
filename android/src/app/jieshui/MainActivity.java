@@ -55,9 +55,6 @@ public class MainActivity extends Activity {
     /** 用户是「点返回/关页离开」而不是「点结算」。两者都会置 stopRequested，
      *  但走人那一路要静默停水、不该弹结算页，也不该建单。v1.1.7 新增。 */
     private volatile boolean leaveRequested = false;
-    /** 水是不是真的在流。running 覆盖整个接水会话（含开阀后的等待期），
-     *  等待期水还没出，没必要为了 90 秒的等待把返回键锁死。 */
-    private volatile boolean watering = false;
     /**
      * 每次接水自增。旧的一轮（例如等待期用户又扫了另一台机器）发现号变了
      * 就必须收手：不能拿 curGoodsId / curSkuId 去轮询和停水 ——
@@ -206,7 +203,6 @@ public class MainActivity extends Activity {
             TextView back = Ui.text(this, "✕", 20, Prefs.C_FG2, false);
             back.setPadding(Ui.dp(this, 10), Ui.dp(this, 4), Ui.dp(this, 10), Ui.dp(this, 4));
             back.setOnClickListener(v -> {
-                if ("device".equals(curScreen) && !canLeaveDevice()) return;
                 leaveDevice();
             });
             Ui.pressable(back);
@@ -799,7 +795,6 @@ public class MainActivity extends Activity {
         // 再点按钮会被当成"结束接水"，表现就是点了完全没反应。
         running = false;
         stopRequested = false;
-        watering = false;
         loadingDevice = false;
         // 换了设备就把上一轮作废。等待期用户又扫了另一台机器时，上一轮还活着的话
         // 会拿已经指向新设备的 curGoodsId 去停水 —— 把别人那台给停了。
@@ -1145,7 +1140,6 @@ public class MainActivity extends Activity {
         if (running) return;
         running = true;
         stopRequested = false;
-        watering = false;
         final int mySession = ++sessionSeq;
         actionBtn.setEnabled(false);
         actionBtn.setText("正在连接…");
@@ -1193,7 +1187,7 @@ public class MainActivity extends Activity {
                 // 就当成「已经结算完」去建订单，否则会生成一张 0 元的废单。
                 ui.post(() -> {
                     stateTitle.setText("已就绪");
-                    stateSub.setText("请在机器上按【开始】，接完按下面【结算】");
+                    stateSub.setText("机器上点击【开始】接水");
                     ring.setPct(0.06f);
                     actionBtn.setText("结算");
                     actionBtn.setEnabled(true);
@@ -1358,7 +1352,6 @@ public class MainActivity extends Activity {
                         ui.post(() -> {
                             running = false;
                             stopRequested = false;
-                            watering = false;
                             // 「扫码后一滴水没接」的所有走法都归到这里：手机上点取消、
                             // 机器上按结算、或者放着不管超时。对用户来说结果是一样的
                             // —— 没接水、没花钱，所以文案统一成一句。
@@ -1385,7 +1378,6 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     running = false;
                     stopRequested = false;
-                    watering = false;
                     if (actionBtn != null) {
                         actionBtn.setText("结算中…");
                         actionBtn.setEnabled(false);
@@ -1549,7 +1541,6 @@ public class MainActivity extends Activity {
     private void showResult(String orderNo, JSONObject detail, JSONObject sync, String settleState) {
         running = false;
         stopRequested = false;
-        watering = false;
 
         LinearLayout outer = screenShell();
         content.addView(topBar("接水完成", false, false));
@@ -1950,7 +1941,6 @@ public class MainActivity extends Activity {
         // 不直接 finish：从结算页/设备页退出会丢掉整个 App。
         // 结算页按返回 = 回首页，用户要用时再点扫码。
         if ("result".equals(curScreen) || "device".equals(curScreen)) {
-            if ("device".equals(curScreen) && !canLeaveDevice()) return;
             leaveDevice();
             return;
         }
@@ -2016,21 +2006,6 @@ public class MainActivity extends Activity {
         } catch (NumberFormatException e) {
             return false;
         }
-    }
-
-    /**
-     * 接水中不允许离开设备页。
-     *
-     * 之前无论按返回键还是右上角 ✕ 都能直接走人：水泵还在出水，
-     * 界面上却已经没有「结束接水」按钮了，只能等它自己流完。
-     *
-     * 注意判断的是 watering 而不是 running —— running 还包含开阀之后的等待期，
-     * 那段时间水一滴都没出，为了 90 秒的等待把返回键锁死纯粹是坑人。
-     */
-    private boolean canLeaveDevice() {
-        // v1.1.7 起界面上不再有「接水中」这一态，用户随时可以走：
-        // 走人时后台会自己停水（leaveDevice → leaveRequested），不会把水敞着。
-        return true;
     }
 
     /**
