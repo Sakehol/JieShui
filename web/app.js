@@ -737,6 +737,22 @@ async function decodeFrom(src, srcW, srcH, deep) {
     const code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: inv });
     if (code && code.data) return code.data;
   }
+
+  // 兜底：点阵二维码（码点分离、中间有亮缝）靠上面几遍一定认不出，
+  // 必须先把缝隙用闭运算填上。这条和安卓端 ScanCore 里那条是同一套逻辑。
+  // 贵（960 宽约 5~9ms），所以只在小档、隔帧跑，不影响正常扫码的手感。
+  if ((deep || frameNo % 3 === 0) && srcW >= 600) {
+    const tw = Math.min(960, Math.max(srcW, srcH));
+    const sc2 = tw / Math.max(srcW, srcH);
+    const w2 = Math.max(1, Math.round(srcW * sc2)), h2 = Math.max(1, Math.round(srcH * sc2));
+    if (cv.width !== w2 || cv.height !== h2) { cv.width = w2; cv.height = h2; }
+    ctx.drawImage(src, 0, 0, w2, h2);
+    for (const r of [2, 3]) {
+      const img = closedImageData(ctx, w2, h2, r);
+      const hit = window.jsQR(img.data, w2, h2, { inversionAttempts: 'invertFirst' });
+      if (hit && hit.data) return hit.data;
+    }
+  }
   return null;
 }
 
@@ -746,6 +762,73 @@ function maybeHit(text) {
   if (navigator.vibrate) navigator.vibrate(40);
   handleScanned(text);
   return true;
+}
+
+/* 点阵二维码专修：形态学闭运算。
+   饮水机屏幕上那种码，每个模块是一个分离的圆点，点与点之间留 1~2px 亮缝。
+   人眼看着毫无问题，jsQR / ZXing 却连三个定位图形都找不到 —— 因为 finder 的
+   1:1:3:1:1 扫线比例被缝隙切碎了。这不是"糊"，是"图案不连通"，所以调锐化、
+   换阈值、多试几档缩放全部无效（都实测过）。闭运算把亮缝填上，模块重新连成
+   实心方块，定位图形恢复正常比例。
+
+   可分离写法（先横后竖），960 宽上 5~9ms；全尺寸做要 100~250ms，不值得。 */
+function minFilter(src, w, h, r) {
+  const tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const base = y * w;
+    for (let x = 0; x < w; x++) {
+      const lo = Math.max(0, x - r), hi = Math.min(w - 1, x + r);
+      let mn = 255;
+      for (let xx = lo; xx <= hi; xx++) { const v = src[base + xx]; if (v < mn) mn = v; }
+      tmp[base + x] = mn;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      const lo = Math.max(0, y - r), hi = Math.min(h - 1, y + r);
+      let mn = 255;
+      for (let yy = lo; yy <= hi; yy++) { const v = tmp[yy * w + x]; if (v < mn) mn = v; }
+      out[y * w + x] = mn;
+    }
+  }
+  return out;
+}
+
+function maxFilter(src, w, h, r) {
+  const tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const base = y * w;
+    for (let x = 0; x < w; x++) {
+      const lo = Math.max(0, x - r), hi = Math.min(w - 1, x + r);
+      let mx = 0;
+      for (let xx = lo; xx <= hi; xx++) { const v = src[base + xx]; if (v > mx) mx = v; }
+      tmp[base + x] = mx;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      const lo = Math.max(0, y - r), hi = Math.min(h - 1, y + r);
+      let mx = 0;
+      for (let yy = lo; yy <= hi; yy++) { const v = tmp[yy * w + x]; if (v > mx) mx = v; }
+      out[y * w + x] = mx;
+    }
+  }
+  return out;
+}
+
+/** 取一块 canvas 画面的灰度，做闭运算，再写回成一份可喂给 jsQR 的 ImageData。 */
+function closedImageData(ctx, w, h, r) {
+  const img = ctx.getImageData(0, 0, w, h);
+  const src = new Uint8Array(w * h);
+  for (let i = 0, p = 0; i < src.length; i++, p += 4) {
+    src[i] = (img.data[p] * 77 + img.data[p + 1] * 150 + img.data[p + 2] * 29) >> 8;
+  }
+  const closed = maxFilter(minFilter(src, w, h, r), w, h, r);
+  for (let i = 0, p = 0; i < closed.length; i++, p += 4) {
+    const v = closed[i];
+    img.data[p] = v; img.data[p + 1] = v; img.data[p + 2] = v; img.data[p + 3] = 255;
+  }
+  return img;
 }
 
 function setScanHint(t) {
@@ -834,6 +917,21 @@ async function decodeBitmapDeep(bmp) {
     const data = ctx.getImageData(0, 0, w, h).data;
     for (const inv of ['dontInvert', 'invertFirst']) {
       const code = window.jsQR(data, w, h, { inversionAttempts: inv });
+      if (code && code.data) return code.data;
+    }
+  }
+
+  // 点阵码兜底：闭运算填缝再解。照片可以慢慢来，这里半径从 1 到 4 全试一遍。
+  const tw = Math.min(1200, long);
+  const sc2 = tw / long;
+  const w2 = Math.max(1, Math.round(bmp.width * sc2));
+  const h2 = Math.max(1, Math.round(bmp.height * sc2));
+  cv.width = w2; cv.height = h2;
+  ctx.drawImage(bmp, 0, 0, w2, h2);
+  for (const r of [1, 2, 3, 4]) {
+    const img = closedImageData(ctx, w2, h2, r);
+    for (const inv of ['dontInvert', 'invertFirst']) {
+      const code = window.jsQR(img.data, w2, h2, { inversionAttempts: inv });
       if (code && code.data) return code.data;
     }
   }
