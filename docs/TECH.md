@@ -328,7 +328,7 @@ goods/normal/skus        goodsId          → skuId, name, extAttr.level[0].pric
 waterQuota/getActive     shopId,categoryCode → show, text（水卡/额度文案）
 payChannelRoute/addUserAfterPayChannel  method  → 登记后付费渠道（接水前必调，见下）
 goods/water/unlock       skuId,promotions,payType=15 → msgId, orderNo
-goods/water/sync         skuId            → workStatus(2=运行中), amount, identify
+goods/water/sync         skuId            → status(1=等按开始,2=出水,4=暂停,3/5=收口,6=故障), workStatus, amount, identify
 goods/endWater           goodsId          → 停水
 order/afterPay/creating  orderNo          → orderId, orderStatus, payType
 order/sync               orderNo,payType  → code=="0" 才算支付完成（关键，见下）
@@ -357,6 +357,13 @@ order/detail             orderId          → waterUse.waterUseValueDesc, tradeO
 > **`goods/water/sync` 的 `amount` 不是金额**，不要除以 100 当钱显示（实测接 0.2L 时它返回 `76`，
 > 而真实原价是 ¥0.04）。官方 `DeviceStartupAct.createObserver$lambda$38` 只用它做判断：
 > `amount` 非空且 `>0` 且有 `identify` 时才调 `afterPay(identify)`，从不展示给用户。
+>
+> **别拿 `amount` 判"水有没有出来"**（v1.1.3 修的就是这个）：服务端直到收口才回填它，
+> 十几秒的短单从头到尾都是 `0`。判断面板状态要用 `status`：
+> `1` 等按开始 / `2` 正在出水 / `4` 暂停 / `3`、`5` 收口该出账 / `6` 设备异常。
+> 依据是 h5 `pages_waterMachine` 的 `checkChannelStatus`（`case 1/2/4: return`，`3/5` 出账，`6` 收口）
+> 与 dex `DeviceStartupAct.lambda$38`、`StartStatusAct.lambda$13` 完全一致。
+> `workStatus` 在暂停时仍是 `2`，官方 UI 从不读它。
 >
 > 正确的结算字段来自 `order/detail`：水量用 `waterUse.waterUseValueDesc`（已带单位，按
 > `waterUseType==1` 显示「用水量」否则「用水时长」），金额用 `tradeOrderItem[].originPrice`

@@ -49,8 +49,8 @@ const MOCK = `
       // 机器在用户按下「结算」后从 0 变成 3。
       // 真机解锁后 workStatus 就已经是 2（屏幕写「设备已解锁 / 轻触【开始】键出水」），
       // 但没出水时 amount 仍是 0、identify 仍是 JSON null。这才是"扫码后没接水"的真实帧。
-      if (!window.__settleAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:'0', status:0});
-      return J({workStatus:3, identify:null, amount:'0', status:2});
+      if (!window.__settleAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:'0', status:1});
+      return J({workStatus:3, identify:null, amount:'0', status:3});
     }
     if (p in D) {
       await new Promise(r=>setTimeout(r,60));

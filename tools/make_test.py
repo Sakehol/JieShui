@@ -17,6 +17,9 @@ DST = os.path.join(ROOT, 'android_test')
 MOCK_BLOCK = r'''
     // ==== UI 测试用 mock（由 tools/make_test.py 自动注入，勿手改）====
     private static int mockSyncTicks = 0;
+    // 设成 true 就让 mock 在第 2 轮之后停在「暂停」，用来在模拟器上看暂停态
+    private static final boolean MOCK_PAUSE = false;
+    private static final boolean MOCK_CANCEL = false;
     private static String mock(String path) {
         switch (path) {
             case "goods/scan/v2":
@@ -45,13 +48,36 @@ MOCK_BLOCK = r'''
                 // 但用户还没按开始"：这时 workStatus 就已经是 2 了，可 amount 还是 0、
                 // identify 还是空。以前这里写 workStatus:0，于是"把 2 当成正在出水"这个
                 // bug 在模拟器上根本照不出来 —— 一开阀就显示「接水中」。
+                // status 用的是官方语义（h5 checkChannelStatus + dex lambda$38 一致）：
+                //   1 = 已解锁等用户按【开始】   2 = 正在出水
+                //   4 = 暂停                   3 / 5 = 本单结束，该出账了
+                //   6 = 设备异常
+                // 老 mock 写的是 0/1/2，新代码按官方语义读必然错位 ——
+                // status=1 会被当成"还没按开始"，于是「按了开始却停在已就绪」测不出来。
+                // 取消档：全程不给 status=2（用户没在机器上按【开始】），
+                // 第 4 轮直接给 status=3（用户改在机器上按了【结算】）。
+                // 必须排在 `mockSyncTicks < 6` 那条前面，否则第 3 轮会漏出一个
+                // status=2，seenRunning 被置位，这一档就永远测不到取消。
+                if (MOCK_CANCEL) {
+                    if (mockSyncTicks <= 3) {
+                        return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
+                    }
+                    return "{\"code\":0,\"data\":{\"workStatus\":3,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":3}}";
+                }
                 if (mockSyncTicks <= 2) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":0}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"0\",\"status\":1}}";
+                }
+                // 暂停档要先把「按开始出水」这一段走完，否则 seenRunning 还是 false，
+                // 代码里 `st == 4 && seenRunning` 这一支永远进不去 —— 测出来的
+                // 就是「页面停在已就绪」，跟 bug 本身混在一起分不清。
+                if (MOCK_PAUSE && mockSyncTicks >= 4) {
+                    // 暂停档：status=4，amount 冻在暂停那一刻不再增长
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"240\",\"status\":4}}";
                 }
                 if (mockSyncTicks < 6) {
-                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"" + (60 * mockSyncTicks) + "\",\"status\":1}}";
+                    return "{\"code\":0,\"data\":{\"workStatus\":2,\"identify\":\"QK202411050001\",\"amount\":\"" + (60 * mockSyncTicks) + "\",\"status\":2}}";
                 }
-                return "{\"code\":0,\"data\":{\"workStatus\":3,\"identify\":\"QK202411050001\",\"amount\":\"186\",\"status\":2}}";
+                return "{\"code\":0,\"data\":{\"workStatus\":3,\"identify\":\"QK202411050001\",\"amount\":\"186\",\"status\":3}}";
             case "payChannelRoute/addUserAfterPayChannel":
                 return "{\"code\":0,\"data\":null}";
             case "order/afterPay/creating":

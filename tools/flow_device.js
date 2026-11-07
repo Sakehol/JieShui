@@ -15,7 +15,7 @@ const MOCK = `
     'waterQuota/getActive': {show:true, text:'水卡余额 ¥12.50 · 享 8 折'},
     'user/balance': {tokenCoin:1250, integral:320, integralAmount:'3.20'},
     'goods/water/unlock': {msgId:'m_7788', orderNo:'QK202411050001'},
-    'goods/water/sync': {workStatus:2, identify:'IDENTIFY_ABC', amount:'186', status:1},
+    'goods/water/sync': {workStatus:2, identify:'IDENTIFY_ABC', amount:'186', status:2},
     'goods/endWater': {},
     'payChannelRoute/addUserAfterPayChannel': {},
     'order/afterPay/creating': {orderId:'ord_99001', orderNo:'0620261106004023612291', orderStatus:1, payType:'15'},
@@ -45,8 +45,8 @@ const MOCK = `
       let data = D[path];
       if (path === 'goods/water/sync') {
         syncTicks++;
-        data = syncTicks < 4 ? {workStatus:2, identify:'IDENTIFY_ABC', amount:String(60*syncTicks), status:1}
-                             : {workStatus:3, identify:'IDENTIFY_ABC', amount:'186', status:2};
+        data = syncTicks < 4 ? {workStatus:2, identify:'IDENTIFY_ABC', amount:String(60*syncTicks), status:2}
+                             : {workStatus:3, identify:'IDENTIFY_ABC', amount:'186', status:3};
       }
       await new Promise(r=>setTimeout(r,120));
       return new Response(JSON.stringify({code:0,msg:'成功',data}), {status:200,headers:{'Content-Type':'application/json'}});

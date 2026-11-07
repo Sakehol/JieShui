@@ -47,8 +47,8 @@ const MOCK = `
       window.__calls.push(path);
       syncTicks++;
       const done = !(syncTicks < 3);
-      const data = done ? {workStatus:3, identify:'IDENTIFY_'+unlockCount, amount:'186', status:2}
-                        : {workStatus:2, identify:'IDENTIFY_'+unlockCount, amount:String(60*syncTicks), status:1};
+      const data = done ? {workStatus:3, identify:'IDENTIFY_'+unlockCount, amount:'186', status:3}
+                        : {workStatus:2, identify:'IDENTIFY_'+unlockCount, amount:String(60*syncTicks), status:2};
       // 水真正停下的时刻：从这一刻起按钮就不能再是「结束接水」
       if (done && !window.__settleAt) window.__settleAt = Date.now();
       await new Promise(r=>setTimeout(r,80));

@@ -204,3 +204,11 @@ h1,h2,h3{margin:0;font-weight:650;letter-spacing:.2px}
 }
 @keyframes tin{from{opacity:0;transform:translate(-50%,8px)}}
 .toast.err{background:rgba(90,28,28,.96);border-color:rgba(255,93,93,.4)}
+
+/* 排障用：?debug=1 时设备页底部摊出最近一次 goods/water/sync 的原始值。
+   机器面板各状态对应 status 几，只能靠真机这一行确认。 */
+#syncDebug{
+  margin-top:10px;word-break:break-all;opacity:.7;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11px;line-height:1.4;text-align:center;
+}

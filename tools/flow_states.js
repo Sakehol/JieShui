@@ -2,17 +2,18 @@ const path = require('path');
 const SHOTS = process.env.SHOTS_DIR || path.join(__dirname, '..', 'shots');
 const shot = (name) => path.join(SHOTS, name);
 
-// 设备页四态回归（用户 m15839 定的口径，取代 v1.1.0 的三按钮方案）：
+// 设备页四态回归（用户 m15839 定的口径，v1.1.3 按 sync.status 重写）。
 //
 //  1) 扫码后 = 「已就绪」，主按钮写「取消」。此时**不能**自己跳「接水中」。
 //  2) 没在机器上按【开始】就直接在机器上按【结算】= 「接水已取消 / 未接水，未产生费用」，
-//     并且**不建订单**（不能出现 null 订单号）。
+//     按钮改成「返回首页」（点它必须真的回首页，用户 m16749 问题 1），且**不建订单**。
 //  3) 在机器上按【开始】出水 = 「接水中」，主按钮变「结束接水」。
-//  4) 机器上按【暂停】= 「接水暂停中」（amount 连着几轮不涨，workStatus 仍是 2）。
+//  4) 机器上按【暂停】= 「接水暂停中」，计时冻结（用户 m16749 问题 3）。
 //  5) 机器上按【结算】= 跳结算页，六行明细齐全。
 //
-// 这里最容易回退的是 1)：出水判据必须只看 sync.amount 相对解锁基线的增长。
-// identify 解锁就有值、workStatus 解锁就是 2，这两样当信号都会让「已就绪」一秒就跳。
+// mock 的 status 必须按官方语义给，否则测的是假象：
+//   1 = 已解锁等按【开始】，2 = 正在出水，4 = 暂停，3/5 = 本单结束，6 = 故障
+// （依据：官方 h5 pages_waterMachine 的 switch，与 dex lambda$38/lambda$13 一致）
 const MOCK = `
 (function(){
   let syncN = 0;
@@ -52,19 +53,21 @@ const MOCK = `
       syncN++;
       let data;
       if (window.__finishAt) {
-        // 机器上按了【结算】。关键：**没接过水的单 amount 必须仍是 0** ——
-        // 真机上没出水就不会有计量，这里要是也写 300，等于帮代码把所有单都当成"接过水"，
-        // 「扫码后没接水直接结算 → 接水已取消」这条就永远测不出来（第一版 mock 就是这么错的）。
-        data = {workStatus:3, identify:'IDENTIFY_A',
-                amount: window.__pressAt ? '300' : '0', status:2};
+        // 机器上按了【结算】= status 3。关键：**没接过水的单 amount 必须仍是 0** ——
+        // 真机上没出水就没有计量。这里要是也写正数，等于帮代码把所有单都当成"接过水"，
+        // 「扫码后没接水直接结算 → 接水已取消」这条就永远测不出来。
+        data = {workStatus:2, identify:'IDENTIFY_A',
+                amount: window.__pressAt ? '300' : '0', status:3};
       } else if (!window.__pressAt) {
-        // 真机解锁态：workStatus 已经是 2、identify 已有值，但 amount 一滴水没出时是 0。
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:0};
+        // 已解锁、等用户按【开始】：status 1，一滴水没出，amount 0
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:1};
       } else if (window.__pauseAt) {
-        // 暂停：workStatus 仍然是 2（机器没退出这一单），但 amount 冻住不涨。
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*(window.__pauseAt ? 2 : syncN)), status:1};
+        // 暂停 = status 4，amount 冻在暂停那一刻的值不再增长
+        const frozen = Math.max(1, Math.round((window.__pauseAt - window.__pressAt) / 1200));
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*frozen), status:4};
       } else {
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:1};
+        // 正在出水 = status 2，amount 持续增长
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:2};
       }
       await new Promise(r=>setTimeout(r,80));
       return J(data);
@@ -121,7 +124,7 @@ module.exports = async (page, { sleep, url }) => {
     // ── 场景 A：扫码后什么都不按，直接在机器上点【结算】 ────────────────
     await page.evaluate(`handleScanned('https://m.qiekj.com/s?SN=NQT2024001&c=04'); 'ok'`);
     out.ready = await snapWhen(page, sleep, s => s.state === '已就绪', 8000);
-    // 再等 4 秒，确认它没自己跳到「接水中」（旧代码在这里就掉了）
+    // 再等 4 秒，确认它没自己跳到「接水中」
     await sleep(4000);
     out.readyAfter4s = await page.evaluate(SNAP);
 
@@ -131,6 +134,16 @@ module.exports = async (page, { sleep, url }) => {
       `(window.__calls||[]).filter(c=>c==='order/afterPay/creating').length`);
     out.cancelStateIsDevice = (out.cancelled.screen || []).indexOf('device') >= 0;
     await page.shot(shot('states-1-cancelled.png'));
+
+    // 用户 m16749 问题 1：取消态的按钮必须能点、且点了真的回首页
+    out.cancelBtnEnabled = out.cancelled.btnDisabled === false;
+    out.cancelBtnLabel = out.cancelled.btn;
+    await page.click('#actionBtn');
+    await sleep(600);
+    out.afterCancelClick = await page.evaluate(`({
+      screen:[...document.querySelectorAll('.screen')].filter(e=>!e.classList.contains('hidden')).map(e=>e.id)
+    })`);
+    out.cancelBtnGoesHome = (out.afterCancelClick.screen || []).indexOf('home') >= 0;
 
     // ── 场景 B：重新扫码 → 机器上按【开始】→ 接水中 ──────────────────────
     await page.evaluate(`window.__pressAt = 0; window.__pauseAt = 0; window.__finishAt = 0; 'ok'`);
@@ -168,6 +181,9 @@ module.exports = async (page, { sleep, url }) => {
       out.cancelled.sub === '未接水，未产生费用' &&
       out.cancelSettleCalls === 0 &&
       out.cancelStateIsDevice === true &&
+      out.cancelBtnEnabled === true &&
+      out.cancelBtnLabel === '返回首页' &&
+      out.cancelBtnGoesHome === true &&
       out.flowing.state === '接水中' &&
       out.flowing.btn === '结束接水' &&
       out.paused.state === '接水暂停中' &&

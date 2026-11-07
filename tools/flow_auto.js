@@ -53,11 +53,11 @@ const MOCK = `
         //
         // identify 也别给值：它是解锁时就下来的"建单凭据"，真机上扫码瞬间就有。
         // 早期版本拿 identify 当出水信号，结果「已就绪」只维持一次轮询就跳成「接水中」。
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:0};   // 已解锁，等用户按开始
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:1};   // status1=已解锁，等用户按【开始】
       } else if (!window.__finishAt) {
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:1};
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:2};  // status2=正在出水
       } else {
-        data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:2};
+        data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:3};  // status3=本单结束
         if (!window.__settleAt) window.__settleAt = Date.now();
       }
       await new Promise(r=>setTimeout(r,80));

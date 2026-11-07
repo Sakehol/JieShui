@@ -32,9 +32,9 @@ const MOCK = `
       if (o.syncNetFail) throw new TypeError('Failed to fetch');
       await new Promise(r=>setTimeout(r,50));
       // 解锁后 workStatus 就是 2 了，只是 amount 还是 0（用户没按开始、没出水）
-      if (!window.__pressAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:'0', status:0});
-      if (!window.__settleAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:'120', status:1});
-      return J({workStatus:3, identify:'IDENTIFY_A', amount:'186', status:2});
+      if (!window.__pressAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:'0', status:1});
+      if (!window.__settleAt) return J({workStatus:2, identify:'IDENTIFY_A', amount:'120', status:2});
+      return J({workStatus:3, identify:'IDENTIFY_A', amount:'186', status:3});
     }
     if (path === 'order/afterPay/creating') {
       if (o.createFail) return E(5000, '服务开小差了，请稍后再试');

@@ -50,11 +50,11 @@ const MOCK = `
         // 真机解锁后 workStatus 就已经是 2 了（屏幕显示「设备已解锁 (6)秒 / 轻触【开始】键出水」），
         // 但用户没按开始，所以 amount 还是 0、identify 还是空。以前 mock 写的是 0，
         // 于是「把 2 当成正在出水」这个 bug 在测试里根本照不出来。
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:0};  // 已解锁，等用户按开始（identify 这时就已经有值了）
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:1};  // status1=已解锁，等用户按【开始】
       } else if (!window.__finishAt) {
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:1};
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:2};  // status2=正在出水
       } else {
-        data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:2};
+        data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:3};  // status3=本单结束
         if (!window.__settleAt) window.__settleAt = Date.now();
       }
       await new Promise(r=>setTimeout(r,80));
