@@ -271,7 +271,9 @@ function show(screenId) {
  * 后台那一轮会看到 stopRequested，自己停水、并且不生成订单。
  */
 function leaveDevice() {
-  if (busy && !watering) stopRequested = true;
+  // v1.1.7 起没有「接水中」这一屏，任何时候离开都不会把水留在那儿：
+  // 标记成「离开」，那一轮看到后会静默停水，不弹结算页也不弹取消页。
+  if (busy) { stopRequested = true; leaveRequested = true; }
   show('home');
   current = null;
 }
@@ -279,14 +281,8 @@ function leaveDevice() {
 // 浏览器/手机返回键：往回收一层，最终回到首页（需要再接水就在首页点扫码）。
 // 不把「回设备页」当默认动作 —— 结算完用户想的是结束这次接水，不是接着开第二次。
 window.addEventListener('popstate', () => {
-  // 水正在流时不允许离开设备页：界面没了就没法停水，纯属坑人。
-  // 注意判断的是 watering 而不是 busy —— busy 还包含开阀后的等待期，
-  // 那段时间水一滴都没出，把用户锁在页面上 90 秒毫无道理。
-  if (watering && !$('#device').classList.contains('hidden')) {
-    history.pushState({ qk: 'device' }, '');
-    toast('接水中，请先结束接水', true);
-    return;
-  }
+  // v1.1.7 起不再拦返回键：没有「接水中」这一屏，也就没有「界面没了就没法停水」的问题。
+  // 离开设备页会自动停水（leaveDevice 里置 leaveRequested），不会留下开着的阀。
   const st = (history.state && history.state.qk) || 'home';
   navGuard = true;
   try {
@@ -1070,6 +1066,7 @@ async function openDevice(dev) {
     busy = false;
   }
   stopRequested = false;
+  leaveRequested = false;
   watering = false;
   const me = { ...dev, detail: null, skus: [], sku: null };
   current = me;
@@ -1194,9 +1191,13 @@ let stopRequested = false;
    号码变了就必须立刻收手：不能再锁 skuId/goodsId 去轮询或停水，
    否则会把「另一台」的水给停掉。 */
 let sessionSeq = 0;
-/* 水是不是真的在流。busy 覆盖的是整个接水会话（含开阀后的等待期），
-   等待期水还没出，这时候没必要把用户锁在设备页上 —— 90 秒的等待里
-   连返回键都按不动，纯属困住用户。只有 watering 为真才拦。 */
+/* 用户点了「返回首页」/ 按了浏览器返回。和「点结算」共用 stopRequested 打断轮询，
+   但收尾时走的路不一样：离开就静默停水，不弹结算页也不弹取消页。 */
+let leaveRequested = false;
+/* 水是不是真的在流。
+   v1.1.7 起不再检测「正在出水」（服务端根本不暴露，详见 startWater 里的说明），
+   所以这里永远是 false —— 用户想离开设备页随时可以走，离开时那一轮会自己停水。
+   保留这个变量是为了让 leaveDevice / popstate 的旧判断不至于炸掉。 */
 let watering = false;
 
 async function startWater() {
@@ -1280,39 +1281,30 @@ async function startWater() {
     const msgId = unlock && unlock.msgId;
     const orderNo0 = unlock && unlock.orderNo;
 
-    // 扫码即开阀之后，用户可能还没来得及按机器上的【开始】。
-    // 这段时间 workStatus 已经是 2 了，但一滴水都没出 —— 不能一看到它就当成
-    // 「正在出水」，否则「已就绪」只会维持一次轮询（约 1.2 秒）。
-    // 这里不放任何"开始/暂停/结算"按钮：服务端没有开阀和暂停接口（已把官方 APK 的
-    // 12 个 dex 穷举确认过，goods/* 下只有 unlock / sync / endWater），
-    // 按钮点了也驱不动机器，只会让用户以为坏了。状态一律跟着机器面板走。
-    setState('已就绪', '请在机器上按【开始】');
+    // 扫码即开阀之后，用户走到机器前、按机器上的【开始】—— 这一段服务端完全不暴露。
+    // 真机抓包（2026-11-08 02:39）显示：开阀后整整 20 秒里 status 恒为 1、
+    // workStatus 恒为 2、amount 恒为 null；人在机器上按了【开始】【暂停】【继续】，
+    // 服务端一个字都不回。只有结算那一刻三个字段才一起变：
+    //   amount null→97、status 1→5、workStatus 2→1。
+    //
+    // 也就是说「接水中 / 接水暂停中」这两屏根本做不出来，硬做只会来回翻车。
+    // 现在页面只保留「已就绪」一屏，按钮是【结算】：
+    //   · 点了之后先停水，再看 sync 的 amount 是不是 > 0
+    //   · amount 还是 0/null → 这一单没出水，走「接水已取消」，不建单
+    //   · amount > 0        → 接过水，走结算页
+    setState('已就绪', '请在机器上按【开始】，接完按下面【结算】');
     setRing(6);
-    btn.textContent = '取消';
+    btn.textContent = '结算';
     btn.disabled = false;
+    const fl0 = $('#flowLine');
+    if (fl0) fl0.classList.add('hidden');        // 不再显示「已接 N 秒」
 
-    let last = null, ticks = 0, userStopped = false;
-    let seenRunning = false, waitTicks = 0, netFailed = false;
-    let waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
-    let pausedShown = false;
-    // 解锁稳定下来之后的 status（1 = 闸已开等按开始）。只在 status 不再是 6 时建立。
-    let baseSt = null;
-    let baseAmount = null;   // 只给调试面板显示用
-    let baseWs = null;       // 只给调试面板显示用
-    let initialSt = null;    // 只给调试面板显示用
-    let initialId = null;    // 只给调试面板显示用
-    let everGrew = false;    // 整个会话里 amount 涨过没有
-    let started = false;     // 用户已经在机器上按过【开始】
-    let sawRealSignal = false;   // 见过真信号：面板按键 / 出水计量，用来判断有没有接过水
-    let wateringNow = false; // 当前是否在出水
-    // 上一次的 amount 读数（null 表示表上还没有读数），用来判断读数还在不在涨
-    let lastAmt = null;
-    // 有读数但连续几轮没涨了 —— 3 轮（约 3.6 秒）不动就当机器上按了【暂停】
-    let freezeTicks = 0;
-    // 最近若干次原始 sync 响应，排查时在控制台敲 window.__qkSyncLog 就能看到
-    window.__qkSyncLog = [];
-    // 约 90 秒等用户按机器上的开始。测试里可以用 window.__startWaitTicks 缩短。
-    const START_WAIT_TICKS = window.__startWaitTicks || 75;
+    let last = null, ticks = 0, userStopped = false, netFailed = false, netTicks = 0;
+    // 最后一轮 sync 的两个状态值。结算是「三个字段同时变」，所以要靠它们判断
+    // 机器是不是已经在服务端收口了（见下面等 amount 的那段）。
+    let stNow = null, wsNow = null;
+    // 没有超时：用户可能接好几分钟水。只在连续连不上服务器时才放弃。
+    const NET_GIVEUP = 8;
     while (true) {
       if (stopRequested) { userStopped = true; break; }
       await sleep(1200);
@@ -1322,210 +1314,104 @@ async function startWater() {
       let sync;
       try {
         sync = await api('goods/water/sync', { skuId: sku.skuId });
+        netTicks = 0;
       } catch (e) {
         if (e.code === 2) throw e;
-        // 网络抖动也计入等待时长。以前这里是 continue，waitTicks 永不增长，
-        // 断网时会一直卡在「已就绪 / 请在机器上按开始」，按钮也一直是「取消」——
-        // 看上去像加载中，其实永远不会自己结束。连续失败 5 次就当这轮放弃。
-        // 注意 userStopped 必须跟着置上：用户点了「取消」才断的网，不能被写成
-        // 「没有在机器上按开始」，那样提示是错的。
-        userStopped = stopRequested;
+        // 网络抖动不算结束。以前这里直接 continue 会让「已就绪」永远挂着，
+        // 现在至少连续失败 8 次（约 10 秒）会自己退出去给个提示。
         netFailed = true;
-        if (++waitTicks > START_WAIT_TICKS) break;
-        if (waitTicks >= 5) break;
+        if (++netTicks >= NET_GIVEUP) break;
         continue;
       }
       last = sync || {};
-      // 注意 Number()：服务端可能把 workStatus 当字符串发（"2"）。
-      // 以前这里是 `const ws = last.workStatus;` + `ws === WORK_RUNNING`，
-      // 一旦线上回的是字符串 "2"，全等永远不成立 → active 恒为 false
-      // → 页面永远停在「已就绪」。安卓端用 optInt 所以没这个问题，
-      // 这正好能解释「网页端和 APP 表现不一致」。
-      const ws = Number(last.workStatus);
-      const active = ws === WORK_RUNNING;
-      // 把原始响应留在内存里，排查时控制台执行 window.__qkSyncLog 即可
+      stNow = (last.status === null || last.status === undefined || last.status === '')
+        ? null : Number(last.status);
+      wsNow = (last.workStatus === null || last.workStatus === undefined)
+        ? null : Number(last.workStatus);
       if (window.__qkSyncLog) {
         window.__qkSyncLog.push({ tick: ticks, status: last.status, workStatus: last.workStatus, amount: last.amount });
-        if (window.__qkSyncLog.length > 40) window.__qkSyncLog.shift();
+        if (window.__qkSyncLog.length > 60) window.__qkSyncLog.shift();
       }
       if (window.__qkDebug) {
         const el = $('#syncDebug');
         if (el) {
-          const v = (x) => (x === null || x === undefined || x === '') ? '∅' : String(x);
-          // 把「解锁那一刻」和现在的值并排摆出来，真机上一眼就能看出哪个字段在动。
-          // 第二行是原始 JSON —— 排查时最有用的是看到服务端到底给了哪些字段。
+          const v = (x) => (x === null || x === undefined || x === '') ? '\u2205' : String(x);
           el.classList.remove('hidden');
           el.textContent = 'sync#' + ticks +
-            ' | status ' + v(initialSt) + '→' + v(last.status) +
-            ' | work ' + v(baseWs) + '→' + v(last.workStatus) +
-            ' | amt ' + v(baseAmount) + '→' + v(last.amount) + '\n' +
-            JSON.stringify(last);
+            ' | status ' + v(last.status) + ' | workStatus ' + v(last.workStatus) +
+            ' | amount ' + v(last.amount) + '\n' + JSON.stringify(last);
         }
       }
-      const amt = Number(last.amount) || 0;
-      const stRaw = last.status;
-      const st = (stRaw === null || stRaw === undefined || stRaw === '') ? null : Number(stRaw);
-      const endedByStatus = st === 3 || st === 5;
-
-      // ── status 的真机语义（2026-11-08 02:03 用户抓包实测）──────────────
-      //   6 = 机器空闲、没有这一单（还没解锁时一直是 6）
-      //   1 = 闸已开、等你在机器上按【开始】   ← 「已就绪」
-      //   2 = 正在出水                        ← 「接水中」
-      //   4 = 机器上按了【暂停】
-      //   3 / 5 = 机器已经结算收口
-      // 另外两条同样是从那份数据里看到的：
-      //   · amount 在结算前恒为 null，收口那一刻才变成具体数字
-      //   · workStatus 只表示「有没有正在进行的单」（1→2→1），不代表有没有出水
-      const idNow = (last.identify === null || last.identify === undefined) ? '' : String(last.identify);
-
-      // 基线只在「订单已经登记好、status 不再是 6」的时候才建立。
-      // 以前是拿解锁后第一轮 sync 当基线，可那一轮 status 还是 6，
-      // 订单一登记 6→1、workStatus 1→2，签名一变就被当成「用户按了开始」，
-      // 于是页面不用人操作就自己跳到「接水中」—— 这就是「秒跳」的根因。
-      if (baseSt === null && st !== null && st !== 6) {
-        baseSt = st;
-        baseAmount = amt;
-        baseWs = Number(last.workStatus);
-        initialSt = st;
-        initialId = idNow;
-      }
-
-      // ── 出水判定：三层，全部有真机数据支撑 ────────────────────────────
-      // 真机抓包（2026-11-08 02:03）：
-      //   等待期 status=1、amount=null、workStatus=2
-      //   结算那一刻 status=5、amount=59、workStatus=1
-      // 也就是说：**没接过水时 amount 是 null，表上有读数才说明真出过水**。
-      // 于是：
-      //   ① status==2 → 机器明确在出水（官方把 2 和 1/4 并列成「进程内」）
-      //   ② status==4 → 机器上按了暂停
-      //   ③ amount>0  → 表上有读数 = 接过水；读数还在涨就是在出水，
-      //                 读数连续 3 轮不动就按暂停处理
-      //   ④ 以上都不成立 → 还是「已就绪」
-      const amtMoving = (lastAmt !== null && amt > lastAmt);
-      const hasWater = amt > 0;
-      if (amtMoving) {
-        freezeTicks = 0;
-        if (!started) { started = true; sawRealSignal = true; }
-      } else if (hasWater) {
-        freezeTicks++;
-      }
-      lastAmt = amt;
-
-      if (st === 4) {
-        wateringNow = false;                       // 机器明确说暂停，优先级最高
-      } else if (st === 2) {
-        if (!started) { started = true; sawRealSignal = true; }
-        wateringNow = true;
-      } else if (hasWater) {
-        // 有读数：表还在走就是出水，连续 3 轮不动就当机器上按了【暂停】
-        wateringNow = freezeTicks < 3;
-      } else {
-        wateringNow = false;                       // 没读数 = 还没按【开始】，停在已就绪
-      }
-
-      if (amt > baseAmount) { baseAmount = amt; everGrew = true; }   // 基线只进不退
-
-      if (wateringNow) {
-        if (!seenRunning) {
-          seenRunning = true;
-          setState('接水中', '正在计量');
-          setRing(12);
-          btn.textContent = '结束接水';
-          btn.disabled = false;
-        } else if (pausedShown) {
-          pausedShown = false;                      // 从暂停恢复
-          setState('接水中', '正在计量');
-        }
-        watering = true;
-      } else if (seenRunning) {
-        // 出过水之后又停了 = 用户在机器上按了【暂停】。计时冻结。
-        if (!pausedShown) {
-          pausedShown = true;
-          setState('接水暂停中', '机器已暂停');
-          if (btn.textContent !== '结束接水') { btn.textContent = '结束接水'; btn.disabled = false; }
-        }
-        watering = false;
-      }
-
-      if (wateringNow) {
-        waterTicks++;
-        $('#flowAmount').textContent = fmtElapsed(waterTicks * 1.2);
-        setRing(Math.min(95, 12 + waterTicks * 3));
-      }
-
-      if (endedByStatus) break;                  // 机器已经结算收口（status 3/5）
-      // workStatus 回到 1 = 这一单结束了。真机数据里它就是「有没有正在进行的单」：
-      // 解锁前 1，解锁后 2，结算后回 1。出过水之后回到 1 就是用户按了【结算】。
-      if (started && !active) break;
-      if (!started) {
-        // 还在等用户按【开始】。只数时间，不再看别的字段 ——
-        // 真机上等待期 status 恒为 1、workStatus 恒为 2，没有别的变化可看。
-        if (++waitTicks > START_WAIT_TICKS) break;
-      }
-      if (ticks > 600) break;
+      // 机器上自己按了【结算】：status 变 3/5，或者 workStatus 回到 1（这一单结束）。
+      // 这一路也会带着 amount，走结算页。
+      if (stNow === 3 || stNow === 5) break;
+      if (wsNow === WORK_IDLE) break;
+      if (ticks > 1800) break;                   // 36 分钟兜底，别无限挂
     }
     if (superseded()) return await abandonSession(dev);
 
-    // ── 收口前先把「到底接没接水」问准 ─────────────────────────────────
-    // 用户实测过两次相反的错：接过水却弹「接水已取消」（钱扣了），
-    // 以及一滴水没接却弹结算页。两种都是因为本地猜 amount。
-    // 服务端才是权威：停水后机器会自己结算，这时 amount/status 才回填。
-    // 所以先发停水指令，再盯几轮 sync 等它落定，最后拿这份数据判断。
-    if (userStopped) {
-      setState('正在结束', '已发送停水指令…');
+    // 用户按返回/关页离开的：静默停水走人，不要改界面，也不要去建单。
+    // stopRequested 也会被「结算」设上，所以靠 leaveRequested 区分两者。
+    if (leaveRequested) {
       try { await api('goods/endWater', { goodsId: dev.goodsId }); } catch (_) { }
-    }
-    for (let k = 0; k < 5; k++) {
-      await sleep(800);
-      try {
-        const s = await api('goods/water/sync', { skuId: sku.skuId });
-        if (s) last = s;
-      } catch (_) { break; }
-      const lz = last || {};
-      const lzSt = (lz.status === null || lz.status === undefined || lz.status === '') ? null : Number(lz.status);
-      if (lzSt === 3 || lzSt === 5) break;                    // 服务器已经收口
-      if ((Number(lz.amount) || 0) > 0) break;                // 已经知道有钱产生
-      if (userStopped) break;                                 // 用户主动取消的，问一轮就够
+      busy = false;
+      stopRequested = false;
+      leaveRequested = false;
+      return;
     }
 
-    // 完全没有消费（一直没按开始）：不要拿空订单去结算，
-    // 否则会生成一张 0 元废单，还会以「有未支付订单」挡住下一次接水。
-    // identify 不能用来判断 —— 它解锁后就有值，早期版本因为它连没出水的单都去建，
-    // 最后弹出一张订单号 null 的结算页。
-    // 现在的判据：只有「真的看到过出水证据」才算接过水 ——
-    //   ① 见过真实信号（workStatus 0→2 / status 变了 / amount 涨过）
-    //   ② 全程 amount 涨过基线
-    //   ③ 收口这一刻 amount > 0（官方 dex lambda$38 的 0043~0063 也是这么判的）
-    const finalAmt = Number((last && last.amount) || 0);
-    const tookWater = sawRealSignal || everGrew || finalAmt > 0;
+    // ── 停水 + 问准「到底有没有出水」 ───────────────────────────────────
+    // 用户点【结算】时先发停水指令，机器随后结算、amount 才回填。
+    // 机器自己收口的那种就不必再发一次。
+    let endSent = false;
+    if (userStopped) {
+      setState('正在结算', '已发送停水指令…');
+      try { await api('goods/endWater', { goodsId: dev.goodsId }); endSent = true; } catch (_) { }
+    }
+    let finalAmt = Number((last && last.amount) || 0);
+    // 等 amount 落定。真机上结算那一刻 amount / status / workStatus 是**同时**变的
+    // （2026-11-08 02:39 抓包：20 秒内三个字段一动不动，第 21 秒一起跳），所以
+    // 只要看到「这台机器已经结算了」的信号就能立刻收工，不用干等 18 秒：
+    //   · amount 有值        → 出过水
+    //   · status 变 3/5      → 这一单在服务端已结束，amount 还是 null 就是没出水
+    //   · workStatus 回到 1  → 同上
+    let settled = (stNow === 3 || stNow === 5 || wsNow === WORK_IDLE);
+    for (let k = 0; k < 20 && !settled && finalAmt <= 0; k++) {
+      await sleep(900);
+      let s;
+      try { s = await api('goods/water/sync', { skuId: sku.skuId }); } catch (_) { break; }
+      if (s) last = s;
+      finalAmt = Number((last && last.amount) || 0);
+      if (finalAmt > 0) break;
+      const sSt = Number((last || {}).status);
+      const sWs = Number((last || {}).workStatus);
+      if (sSt === 3 || sSt === 5 || sWs === WORK_IDLE) { settled = true; break; }
+    }
+
+    // 判据只有一条：amount > 0 就是这次真出过水。
+    // 这条是用户 2026-11-08 两份真机抓包一起确认的 —— 结算前恒为 null，
+    // 结算那一刻才回填，所以它既能证明「出过水」，也不会把没接水的单算成消费。
+    const tookWater = finalAmt > 0;
     if (!tookWater) {
-      // 停水指令必须发给这一轮的设备，不能读 current（可能已经换成另一台了）
-      try { await api('goods/endWater', { goodsId: dev.goodsId }); } catch (_) { }
-      // 断网退出要说"网络不稳"，别用「已取消」把它盖掉 —— 用户看到「没有在机器上按开始」
-      // 会以为是自己的操作问题，其实是根本没连上服务器。
+      // 停水指令只补发一次：上面点【结算】时已经发过了，这里再发一次只是浪费。
+      if (!endSent) {
+        try { await api('goods/endWater', { goodsId: dev.goodsId }); } catch (_) { }
+      }
       if (netFailed) {
         setState('网络不稳', '请检查网络后重试');
       } else {
-        // 「扫码后一滴水没接」的走法都归到这里：在机器上按了结算、在机器上什么都不按、
-        // 或者在手机/网页上点了【取消】。对用户来说结果一样 —— 没接水、没花钱。
         setState('接水已取消', '未接水，未产生费用');
       }
       setRing(0);
-      // 这一单已经结束了，再放一个「取消」是死路：点了没有任何东西可取消，
-      // 用户只能一脸问号地停在这个页面上。这里该给的是出口。
       btn.textContent = '返回首页';
       btn.disabled = false;
-      const fl = $('#flowLine');
-      if (fl) fl.classList.add('hidden');
       busy = false;
       stopRequested = false;
       return;
     }
 
-    // 水一停（机器上点了结算，workStatus 不再是 RUNNING）就立刻把按钮从「结束接水」
-    // 切成不可点的「结算中…」。之前这里什么都没动，于是结算那几秒
-    // （afterPay/creating + 最多 4 次 order/sync）页面上还挂着一个亮着的「结束接水」，
-    // 用户点了没反应 —— 他看到的"反应太慢"就是这个。
+    // 已经确认接过水，进入结算流程。按钮立刻切成不可点的「结算中…」，
+    // 免得那几秒（afterPay/creating + 最多 4 次 order/sync）还挂着一个能点的键。
     stopRequested = false;
     watering = false;
     btn.textContent = '结算中…';
@@ -1627,6 +1513,7 @@ async function startWater() {
     if (!superseded()) {
       busy = false;
       stopRequested = false;
+      leaveRequested = false;
       watering = false;
     }
   }
@@ -1637,7 +1524,7 @@ async function stopWater() {
   stopRequested = true;
   const btn = $('#actionBtn');
   btn.disabled = true;
-  btn.textContent = '正在结束…';
+  btn.textContent = '正在结算…';
 }
 
 /**
@@ -1650,8 +1537,7 @@ async function stopWater() {
 function resetDevicePanel() {
   const btn = $('#actionBtn');
   if (btn) {
-    // 设备页只剩「取消 / 结束接水」，没有「开始接水」——
-    // 服务端没有开阀接口，做出来也是点了不出水的假按钮。
+    // 设备页只有一枚按钮，先是「正在连接…」→「结算」。
     btn.textContent = '正在连接…';
     btn.disabled = true;
   }
@@ -1804,17 +1690,16 @@ function bind() {
 
   $('#btnRefreshDevices').onclick = syncDevices;
   $('#btnCloseDevice').onclick = () => {
-    // 水真的在流时关掉设备页 = 水一直流但界面上没有停止按钮
-    if (watering) return toast('接水中，请先结束接水', true);
+    // v1.1.7 起关掉设备页会自己停水（leaveDevice 置 leaveRequested），
+    // 不会再出现「水在流但界面没有停止按钮」的局面。
     leaveDevice();
   };
   $('#actionBtn').onclick = () => {
     const label = $('#actionBtn').textContent;
-    // 已就绪时这是「取消」，接水中/暂停时是「结束接水」，结算中是禁用态。
-    // 两者都是"从这一端结束这一单"：取消 = 没接过水，直接停阀不建单；
-    // 结束接水 = 已接过水，停阀后走结算。真正的区分在 stopWater/会话里做。
+    // 设备页只有三种按钮：已就绪时是【结算】、结算完是【返回首页】、结算中是禁用态。
+    // 「结算」= 停阀 → 问服务端 amount → 有没有出水决定走取消页还是结算页。
     if (label === '返回首页') return leaveDevice();
-    if (label === '取消' || label === '结束接水') return stopWater();
+    if (label === '结算' || label === '取消' || label === '结束接水') return stopWater();
     if (busy) return toast('正在处理，请稍候', true);
     startWater();
   };

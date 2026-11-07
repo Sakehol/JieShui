@@ -1,21 +1,18 @@
 /* =========================================================
-   接水 · 真机取证页
+   接水 · 真机取证页（v2：一个按钮）
 
-   目的：把 goods/water/sync 在真机上返回的原始数据原样记下来，
-   并标出哪一次、哪个字段变了。
+   v1 的错：把「解锁」和「记录」拆成两个按钮，用户点「开始记录」
+   时根本没开阀，机器当然没反应。
 
-   这里**不做任何界面判断**，不显示「接水中/已就绪」，只解锁 + 记录。
-   前几版出问题全都是「判据猜错了」，而猜错的原因是从来没见过真机上的
-   原始值 —— 一直在拿自己写的 mock 验证自己写的判据。
+   v2：点一次「开始」= 登记后付费渠道 + 开阀解锁 + 立刻开始轮询
+   goods/water/sync。不做任何判断、不改机器状态，只记录原始数据。
 
    用法：
-     1. 打开 capture（token 和主站共用，主站登录过就不用再登）
-     2. 选设备 → 点「① 开阀解锁」
-     3. 点「② 开始记录」，手先别动，等它记 2 行
-     4. 到机器前：按【开始】等 4 秒 →【暂停】等 4 秒 →【继续】等 4 秒 →【结算】
-     5. 点「复制全部」，把内容发回来
-
-   变了的字段会标 *，所以一眼就能看出哪个字段跟着面板在动。
+     1. 打开 /capture（token 和主站共用）
+     2. 选设备 → 点「开始（开阀 + 记录）」
+     3. 等页面显示「已开阀」
+     4. 到机器前：按【开始】4 秒 →【暂停】4 秒 →【继续】4 秒 →【结算】
+     5. 点「复制全部」发回来
    ========================================================= */
 'use strict';
 
@@ -25,17 +22,17 @@
   const APP_VERSION = '1.145.0';
   const UA = 'okhttp/3.14.9';
   const APP_SECRET = 'nFU9pbG8YQoAe1kFh+E7eyrdlSLglwEJeA0wwHB1j5o=';
-  const PROMOTIONS = '[{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"-6"},{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"-7"},{"assetId":"0","oldPromotionId":"0","orgId":"0","promotionId":"0","promotionType":"8"}]';
+  const PROMOTIONS = '[{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"-6"},{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"-7"},{"assetId":"0","oldPromotionId":"0","orgId":"0","promotionId":"0","promotionType":8}]';
 
   const $ = (s) => document.querySelector(s);
   const logEl = $('#log');
+  const liveEl = $('#live');
+  const liveHintEl = $('#liveHint');
   const devSel = $('#devSel');
-  const btnUnlock = $('#btnUnlock');
-  const btnStart = $('#btnStart');
+  const btnGo = $('#btnGo');
   const btnStop = $('#btnStop');
   const btnMark = $('#btnMark');
   const btnCopy = $('#btnCopy');
-  const btnClear = $('#btnClear');
 
   let timer = null;
   let seq = 0;
@@ -44,6 +41,12 @@
   let detail = null;
   let curSku = null;
   let prevFlat = null;
+  let running = false;
+  let lastMsgId = '';
+  let lastOrderNo = '';
+  let probeCtx = null;
+  let lastProbeStatus = null;
+  let probing = false;
 
   function out(text, cls) {
     lines.push(text);
@@ -161,29 +164,47 @@
       + '.' + String(d.getMilliseconds()).padStart(3, '0');
   }
 
-  /* 把 sync 的 data 摊平成一行：字段名一个不落。
-     与上一行不同的字段后面标 * —— 这是整个页面最重要的一列信息。 */
+  function fmtVal(v) {
+    if (v === null) return 'null';
+    if (v === undefined) return 'undefined';
+    if (typeof v === 'string') return JSON.stringify(v);
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
+
+  /* 摊平成一行；与上一行不同的字段标 * */
   function flat(data) {
     if (data === null || data === undefined) return '(null)';
     if (typeof data !== 'object') return String(data);
     const cur = {};
-    for (const k of Object.keys(data).sort()) {
-      let v = data[k];
-      if (v === null) v = 'null';
-      else if (v === undefined) v = 'undefined';
-      else if (typeof v === 'string') v = JSON.stringify(v);
-      else if (typeof v === 'object') v = JSON.stringify(v);
-      cur[k] = String(v);
-    }
+    for (const k of Object.keys(data).sort()) cur[k] = fmtVal(data[k]);
     const parts = [];
     for (const k of Object.keys(cur)) {
       const changed = prevFlat !== null && prevFlat[k] !== cur[k];
-      const same = prevFlat !== null && prevFlat[k] === cur[k];
-      // 只有「上一行有这个字段、这一行变了」才标星；第一行不标
       parts.push(k + '=' + cur[k] + (changed ? '*' : ''));
     }
     prevFlat = cur;
     return parts.join('  ');
+  }
+
+  /* 把 status 翻成人话，方便你对着机器面板核对 */
+  const STATUS_TEXT = {
+    '1': '闸已开，等你按【开始】',
+    '2': '正在出水',
+    '4': '已暂停',
+    '3': '已结算',
+    '5': '已结算',
+    '6': '机器空闲（没这一单）'
+  };
+
+  function renderLive(d) {
+    if (!d) { liveEl.textContent = '—'; liveHintEl.textContent = ''; return; }
+    const st = d.status;
+    liveEl.textContent = 'status=' + fmtVal(st) + '   workStatus=' + fmtVal(d.workStatus)
+      + '   amount=' + fmtVal(d.amount);
+    const text = STATUS_TEXT[String(st)];
+    liveHintEl.textContent = text ? ('→ ' + text) : '→ （这个 status 值以前没见过，记下来）';
+    liveEl.className = 'live' + (text ? '' : ' unknown');
   }
 
   async function tick() {
@@ -201,77 +222,170 @@
       out('#' + seq + ' ' + t + '  code=' + res.code + ' msg=' + (res.msg || res.message || ''), 'err');
       return;
     }
-    const line = '#' + seq + ' ' + t + '  ' + flat(res.data || {});
-    // 有字段变了就把整行标绿，方便肉眼定位
+    const data = res.data || {};
+    renderLive(data);
+    const line = '#' + seq + ' ' + t + '  ' + flat(data);
     out(line, line.indexOf('*') >= 0 ? 'mark' : null);
+
+    /* status 一变就把那一批只读探针全部打一遍。
+       只看服务端有没有一个接口能反应「机器上按了【开始】」。
+       加个开关，免得一晚上打几千个请求。 */
+    if (probeCtx && data.status !== lastProbeStatus) {
+      const first = lastProbeStatus === null;
+      lastProbeStatus = data.status;
+      if (!first && !probing) {
+        probing = true;
+        out('  ★ status 变了（' + fmtVal(lastProbeStatus) + '），打一轮探针', 'sep');
+        probeAll(probeCtx).finally(() => { probing = false; });
+      }
+    }
   }
 
-  /* ① 开阀解锁 —— 与主站 startWater() 走同一串请求 */
-  async function unlock() {
+  /* ---------------- 探针：开阀后试探几个只读接口 ----------------
+     目的只有一个：找出「机器上按了【开始】」这件事服务端到底有没有地方能查到。
+     goods/water/sync 只回 4 个字段，如果它还带别的参数、或者另一个只读接口
+     能查到，那就有救；全都查不到，就说明数据根本不存在。
+     全部只读，不会开阀也不会扣费。 */
+  function probeName(call_) { return call_.name; }
+
+  async function probeAll(ctx) {
+    const { skuId, goodsId, msgId, orderNo, imei, categoryCode } = ctx;
+    const list = [
+      // 同名接口多带几个参数，看会不会吐出更多字段
+      ['goods/water/sync +msgId', 'goods/water/sync', { skuId, msgId }, null],
+      ['goods/water/sync +orderNo', 'goods/water/sync', { skuId, orderNo }, null],
+      ['goods/water/sync +goodsId', 'goods/water/sync', { skuId, goodsId, msgId, orderNo }, null],
+      // h5 那边用的另一个 sync（参数是 machineFunctionId）。我们没有 id，
+      // 但试试 msgId / imei 会不会被接受 —— 万一通，它返回的就是机器实时态
+      ['machine/water/sync msgId', 'machine/water/sync', { machineFunctionId: msgId }, null],
+      ['machine/water/sync imei', 'machine/water/sync', { machineFunctionId: imei }, null],
+      // h5 打开设备时用来查功能列表与状态的
+      ['machine/function/listState', 'machine/function/listState', { machineId: imei, msgId }, null],
+      ['machine/sync msgId', 'machine/sync', { msgId }, null],
+      ['machine/detail', 'machine/detail', { machineId: imei, goodsId }, null],
+      ['machine/function/list', 'machine/function/list', { machineId: imei }, null],
+      ['machine/water/stateCmd', 'machine/water/stateCmd', { type: 1, machineId: imei }, null],
+      ['machine/msg/sync', 'machine/msg/sync', { msgId, machineId: imei }, null],
+      // 订单侧：有时订单里会带机器的实时状态
+      ['order/detail', 'order/detail', { orderNo }, null],
+      ['goods/latestUsed', 'goods/latestUsed', { categoryCode }, null]
+    ];
+    for (const [name, path, params] of list) {
+      let res;
+      try {
+        res = await call(path, params);
+      } catch (e) {
+        out('  探针 ' + name + ' → 连接失败 ' + (e && e.message), 'warn');
+        continue;
+      }
+      const code = res && res.code;
+      const data = res && res.data;
+      const brief = data === undefined ? '(无 data)' : JSON.stringify(data).slice(0, 300);
+      const line = '  探针 ' + name + ' → code=' + code + ' data=' + brief;
+      out(line, code === 0 ? 'mark' : 'warn');
+    }
+
+    /* 链式探针：h5 那条链路要 machineFunctionId，它来自 machine/function/list 的 items[].id。
+       如果同一台机器在两套系统里都登记过，这条路就能拿到真正的实时状态。 */
+    for (const mid of [imei, goodsId]) {
+      if (!mid) continue;
+      let fl;
+      try { fl = await call('machine/function/list', { machineId: mid }); } catch (_) { continue; }
+      const items = (fl && fl.data && fl.data.items) || (fl && fl.items) || null;
+      out('  链式 machine/function/list machineId=' + mid + ' → code=' + (fl && fl.code) +
+        ' items=' + (items ? JSON.stringify(items).slice(0, 300) : '(无)'), items ? 'mark' : 'warn');
+      if (!items || !items.length) continue;
+      for (const it of items.slice(0, 3)) {
+        const fid = it && (it.id || it.functionId);
+        if (!fid) continue;
+        const s2 = await call('machine/water/sync', { machineFunctionId: fid }).catch(() => null);
+        out('  链式 machine/water/sync machineFunctionId=' + fid + ' (' + (it.functionName || '') + ')' +
+          ' → ' + JSON.stringify(s2).slice(0, 300), s2 && s2.status ? 'sep' : 'warn');
+      }
+    }
+  }
+
+  async function go() {
+    if (running) return;
     if (!dev) { out('先选设备', 'err'); return; }
     if (!curSku) { out('这台设备还没取到计费方式', 'err'); return; }
-    btnUnlock.disabled = true;
-    out('─── 开始解锁 ' + (dev.name || dev.goodsId) + ' ───', 'mark');
+
+    running = true;
+    btnGo.disabled = true;
+    devSel.disabled = true;
+    btnStop.disabled = false;
+    lines = []; logEl.textContent = ''; prevFlat = null; seq = 0;
+    liveEl.textContent = '—'; liveHintEl.textContent = '';
+
+    out('─── ' + stamp() + ' 开始：' + (dev.name || dev.goodsId) + ' ───', 'mark');
+
     try {
       // 后付费渠道登记：不登记的话钱扣了订单会挂「待支付」
       await call('payChannelRoute/addUserAfterPayChannel', { method: '15' }).catch(() => { });
 
-      const params = { skuId: curSku.skuId, promotions: PROMOTIONS, payType: '15' };
-      const io = (await call('orderRisk/isCheckLocation', {
-        categoryCode: (detail && detail.categoryCode) || '04',
-        imei: (detail && detail.imei) || ''
-      }).catch(() => null));
+      const cat = (detail && detail.categoryCode) || dev.categoryCode || '04';
+      const imei = (detail && detail.imei) || dev.imei || '';
+
+      const io = await call('orderRisk/isCheckLocation', { categoryCode: cat, imei }).catch(() => null);
       out('位置校验：' + JSON.stringify(io && io.data), null);
 
-      const res = await call('goods/water/unlock', params, {
-        categoryCode: (detail && detail.categoryCode) || '04',
-        imei: (detail && detail.imei) || '',
-        lat: '0',
-        lng: '0'
-      });
+      const res = await call('goods/water/unlock',
+        { skuId: curSku.skuId, promotions: PROMOTIONS, payType: '15' },
+        { categoryCode: cat, imei, lat: '0', lng: '0' });
+
       if (res.code !== 0) {
-        out('解锁失败：code=' + res.code + ' ' + (res.msg || ''), 'err');
-        btnUnlock.disabled = false;
+        out('开阀失败：code=' + res.code + ' ' + (res.msg || ''), 'err');
+        out('（如果提示订单待支付，先去官方 App 把那条单付掉再回来）', 'warn');
+        finish();
         return;
       }
-      out('解锁成功 msgId=' + (res.data && res.data.msgId) + ' orderNo=' + (res.data && res.data.orderNo), 'mark');
-      btnStart.disabled = false;
-      btnStart.focus();
-      out('→ 现在点「② 开始记录」，然后去机器上按【开始】', 'warn');
+      out('已开阀  msgId=' + (res.data && res.data.msgId) + '  orderNo=' + (res.data && res.data.orderNo), 'mark');
+      out('→ 走到机器前按【开始】，然后【暂停】【继续】【结算】', 'warn');
+
+      lastMsgId = String((res.data && res.data.msgId) || '');
+      lastOrderNo = String((res.data && res.data.orderNo) || '');
+      probeCtx = { skuId: curSku.skuId, goodsId: dev.goodsId, msgId: lastMsgId, orderNo: lastOrderNo, imei, categoryCode: cat };
+      lastProbeStatus = null;
+      out('（按下机器面板的键时，会顺带打一轮只读探针，看服务端有没有别的接口能反应「开始」）', 'warn');
+
+      // 开阀后立刻开始轮询（不等用户点第二次）
+      tick();
+      timer = setInterval(tick, 1200);
     } catch (e) {
-      out('解锁失败：' + (e && e.message), 'err');
-      btnUnlock.disabled = false;
+      out('失败：' + (e && e.message), 'err');
+      finish();
     }
   }
 
-  /* ② 开始记录 */
-  function start() {
-    if (timer) return;
-    if (!curSku) { out('这台设备还没取到计费方式', 'err'); return; }
-    out('─── 开始记录 ───', 'mark');
-    btnStart.disabled = true;
-    btnStop.disabled = false;
-    btnMark.disabled = false;
-    devSel.disabled = true;
-    btnUnlock.disabled = true;
-    tick();
-    timer = setInterval(tick, 1200);
+  function finish() {
+    if (timer) { clearInterval(timer); timer = null; }
+    running = false;
+    btnGo.disabled = false;
+    btnStop.disabled = true;
+    devSel.disabled = false;
   }
 
   function stop() {
-    if (timer) { clearInterval(timer); timer = null; }
-    btnStart.disabled = !!curSku === false;
-    btnStop.disabled = true;
-    btnMark.disabled = true;
-    devSel.disabled = false;
-    out('─── 停止记录 ───', 'mark');
+    out('─── ' + stamp() + ' 结束记录 ───', 'mark');
+    finish();
   }
 
-  btnUnlock.onclick = unlock;
-  btnStart.onclick = start;
+  btnGo.onclick = go;
   btnStop.onclick = stop;
-  btnMark.onclick = () => out('─── 标记 @' + stamp() + ' ───', 'warn');
-  btnClear.onclick = () => { lines = []; logEl.textContent = ''; prevFlat = null; seq = 0; };
+
+  function mark(what) {
+    const t = '─── ' + what + '  ' + stamp() + ' ───';
+    out(t, 'sep');
+    liveHintEl.textContent = '已记下：' + what;
+  }
+
+  btnMark.onclick = () => mark('手动标记');
+  ['mkStart', 'mkPause', 'mkResume', 'mkEnd'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const label = el.textContent.replace(/^我按了/, '').trim();
+    el.onclick = () => mark('我按了' + label);
+  });
 
   btnCopy.onclick = async () => {
     const text = lines.join('\n');
@@ -298,6 +412,7 @@
     const list = readDevices();
     if (!list.length) {
       devSel.innerHTML = '<option value="">没有设备，请先回主站扫一次码</option>';
+      btnGo.disabled = true;
       return;
     }
     devSel.innerHTML = list.map((d, i) =>
@@ -314,8 +429,7 @@
     detail = null;
     prevFlat = null;
     if (!dev) return;
-    btnStart.disabled = true;
-    btnUnlock.disabled = true;
+    btnGo.disabled = true;
     out('─── 选中设备：' + (dev.name || dev.goodsId) + '  goodsId=' + dev.goodsId + ' ───', 'mark');
     try {
       const d = await call('goods/normal/details', { goodsId: dev.goodsId });
@@ -337,8 +451,8 @@
       else if (data && Array.isArray(data.skus)) arr = data.skus;
       if (!arr.length) { out('这台设备没有计费方式', 'err'); return; }
       curSku = arr[0];
-      out('计费方式 skuId=' + (curSku.skuId || '?') + '  原始：' + JSON.stringify(curSku).slice(0, 300), 'mark');
-      btnUnlock.disabled = false;
+      out('计费方式 skuId=' + (curSku.skuId || '?'), 'mark');
+      btnGo.disabled = false;
     } catch (e) {
       out('取设备信息失败：' + (e && e.message), 'err');
     }

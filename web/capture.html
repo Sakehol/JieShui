@@ -10,35 +10,43 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>接水 · 真机取证</h1>
-  <div class="sub">解锁 + 记录，不改机器状态以外的任何东西</div>
+  <h1>接水 · 取证</h1>
+  <div class="sub">一个按钮：开阀 + 记录。什么都不判断，只把原始数据记下来</div>
 
   <div class="card">
     <label for="devSel">设备</label>
     <select id="devSel"><option value="">加载中…</option></select>
     <div class="row">
-      <button id="btnUnlock">① 开阀解锁</button>
-      <button id="btnStart" disabled>② 开始记录</button>
+      <button id="btnGo" class="go">开始（开阀 + 记录）</button>
+      <button id="btnStop" class="ghost" disabled>结束</button>
     </div>
     <div class="row">
-      <button id="btnMark" class="ghost" disabled>打个标记</button>
-      <button id="btnStop" class="ghost" disabled>停止</button>
-    </div>
-    <div class="row">
+      <button id="btnMark" class="ghost">打个标记</button>
       <button id="btnCopy" class="ghost">复制全部</button>
-      <button id="btnClear" class="ghost">清空</button>
     </div>
     <div class="hint">
-      按顺序来：<br>
-      <b>① 开阀解锁</b> → 页面显示「已开阀，等你在机器上按开始」<br>
-      <b>② 开始记录</b> → 手先别动，等它记 2 行<br>
-      → 走到机器前，按 <b>【开始】</b>，等 4 秒<br>
-      → 按 <b>【暂停】</b>，等 4 秒<br>
-      → 按 <b>【继续】</b>，等 4 秒<br>
-      → 按 <b>【结算】</b>，等它记 3 行<br>
-      然后点「复制全部」发回来。<br>
-      变了的值会标 <b>*</b>，一眼能看出哪个字段在动。
+      点「开始」→ 等页面出现 <b>已开阀</b> → 走到机器前。<br>
+      按机器上某个键的前一刻，先点下面<b>对应颜色的按钮</b>记一笔（这样日志里就知道哪一秒你按了什么）。<br>
+      每次按完等 4 秒再按下一个。
     </div>
+  </div>
+
+  <div class="card marks-card">
+    <div class="live-label">按机器键之前，先点一下它（记时间用）</div>
+    <div class="row">
+      <button id="mkStart" class="mk">我按了【开始】</button>
+      <button id="mkPause" class="mk">我按了【暂停】</button>
+    </div>
+    <div class="row">
+      <button id="mkResume" class="mk">我按了【继续】</button>
+      <button id="mkEnd" class="mk">我按了【结算】</button>
+    </div>
+  </div>
+
+  <div class="card live-card">
+    <div class="live-label">现在机器报的是</div>
+    <div id="live" class="live">—</div>
+    <div id="liveHint" class="live-hint"></div>
   </div>
 
   <div id="log">等待操作…</div>

@@ -15,6 +15,7 @@ const MOCK = `
   window.__calls = [];
   window.__pressAt = 0;      // 用 __press() 让机器进入出水状态
   window.__finishAt = 0;     // 用 __finish() 让机器结算
+  window.__endedAt = 0;      // 页面发了 goods/endWater 的时刻
   const D = {
     'goods/scan/v2': {id:'10001', categoryCode:'04', categoryName:'3号饮水机', shopId:88,
       jumpToDevicePageFlag:false, jumpToAlipayFlag2:false},
@@ -46,15 +47,17 @@ const MOCK = `
     if (path === 'goods/water/sync') {
       syncN++;
       let data;
-      if (!window.__pressAt) {
-        // workStatus 0 = 阀已开、用户还没按【开始】（v1.0.7 语义）。不能写 2 ——
-        // 写 2 就等于机器已经在出水，「已就绪」这一态会被整个吃掉。
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};  // status1=已解锁，等用户按【开始】
-      } else if (!window.__finishAt) {
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:2};  // status2=正在出水
-      } else {
-        data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:3};  // status3=本单结束
+      // 真机抓包（2026-11-08 02:39）：开阀后到结算前，按没按【开始】这三个
+      // 字段都不动（status 恒 1 / workStatus 恒 2 / amount 恒 null）；结算那刻
+      // 才一起变。所以这里不再用 status:2 假装出水 —— v1.1.7 起界面本来也
+      // 只有「已就绪」一屏，出没出水只靠结算后的 amount 判断。
+      const settled = window.__endedAt && (Date.now() - window.__endedAt) > 900;
+      if (settled) {
+        data = {workStatus:1, identify:'IDENTIFY_A',
+                amount: window.__pressAt ? '300' : null, status:5};
         if (!window.__settleAt) window.__settleAt = Date.now();
+      } else {
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};
       }
       await new Promise(r=>setTimeout(r,80));
       return J(data);
@@ -62,6 +65,11 @@ const MOCK = `
     if (path === 'order/afterPay/creating') {
       await new Promise(r=>setTimeout(r,300));
       return J({orderId:'ord_auto_1', orderNo:'0620261106009999999999', orderStatus:1, payType:'15'});
+    }
+    if (path === 'goods/endWater') {
+      if (!window.__endedAt) window.__endedAt = Date.now();
+      await new Promise(r=>setTimeout(r,60));
+      return J({});
     }
     if (path in D) {
       await new Promise(r=>setTimeout(r,60));
@@ -111,32 +119,21 @@ module.exports = async (page, { sleep, url }) => {
     out.settleCallsWhileWaiting = await page.evaluate(
       `(window.__calls||[]).filter(c=>c==='order/afterPay/creating').length`);
 
-    // ---- 取消路径 ----
-    // 三键条已按用户要求删掉：设备页只剩一个主按钮，#actionBtn 在「已就绪」时
-    // 文案就是【取消】。点它 = 从这一端结束这一单（没接过水，直接停阀不建单）。
+    // ---- 没出水就直接结算的分支（v1.1.7）----
+    // 设备页只有一枚主按钮，在「已就绪」时文案是【结算】。点它 = 从手机端
+    // 结束这一单；服务端结算后 amount 仍是 null（没出水就没有计量），
+    // 页面据此判定「接水已取消」，按钮变成【返回首页】。
     out.btnWhileWaiting = await page.evaluate(`document.querySelector('#actionBtn').textContent`);
-    out.cancelBtnVisible = out.btnWhileWaiting === '取消';
+    out.settleBtnVisible = out.btnWhileWaiting === '结算';
     await page.click('#actionBtn');
-    await sleep(1800);
-    out.afterCancel = await page.evaluate(snap);
+    await sleep(6000);
+    out.afterSettle = await page.evaluate(snap);
     out.cancelSettleCalls = await page.evaluate(
       `(window.__calls||[]).filter(c=>c==='order/afterPay/creating').length`);
     out.cancelEndWater = await page.evaluate(
       `(window.__calls||[]).filter(c=>c==='goods/endWater').length`);
+    out.cancelBtnLabel = await page.evaluate(`document.querySelector('#actionBtn').textContent`);
     await page.shot(shot('auto-cancel.png'));
-    return out;
-
-    // 用户在机器上按「开始」，出水；再接 3 秒后点「结算」
-    await page.evaluate(`window.__pressAt = Date.now(); 'ok'`);
-    await sleep(3600);
-    out.flowing = await page.evaluate(snap);
-    await page.evaluate(`window.__finishAt = Date.now(); 'ok'`);
-    await sleep(3000);
-    out.done = await page.evaluate(snap);
-    out.rows = await page.evaluate(`document.querySelector('#resultRows').textContent`);
-    out.endWaterCalls = await page.evaluate(
-      `(window.__calls||[]).filter(c=>c==='goods/endWater').length`);
-    await page.shot(shot('auto-scan.png'));
   } catch (e) {
     out.ERR = String(e && e.stack || e);
   }

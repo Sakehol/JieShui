@@ -16,17 +16,38 @@ select, button {
 button { background: #1d6cf3; border-color: #1d6cf3; font-weight: 600; cursor: pointer; }
 button:disabled { opacity: .45; }
 button.ghost { background: transparent; border-color: #2a3852; color: #b9c6da; font-weight: 500; }
+button.go { background: #16a34a; border-color: #16a34a; font-size: 15px; padding: 13px 12px; }
 .row { display: flex; gap: 8px; margin-top: 10px; }
 .row > * { flex: 1; }
 .hint { font-size: 12px; color: #7f8ea8; margin-top: 8px; line-height: 1.55; }
 .hint b { color: #ffd479; font-weight: 600; }
+
+/* 实时状态卡：把最新一次的 status/workStatus/amount 摊在眼前，不用翻日志 */
+.live-card { background: #101b2e; border-color: #24405f; }
+.live-label { font-size: 11px; color: #7f8ea8; margin-bottom: 6px; letter-spacing: .3px; }
+.live {
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #9fe7b4; word-break: break-all;
+}
+.live.unknown { color: #ffb27a; }
+.live-hint { font-size: 12px; color: #ffd479; margin-top: 6px; min-height: 18px; }
+
 #log {
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   background: #060c17; border: 1px solid #1c2942; border-radius: 10px;
-  padding: 10px; max-height: 52vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  padding: 10px; max-height: 46vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
   color: #a9d5ff;
 }
 .mark { color: #7ee787; display: block; }
 .warn { color: #ffb27a; display: block; }
 .err { color: #ff8f8f; display: block; }
+.sep { color: #ffd479; display: block; font-weight: 600; }
 .line { display: block; }
+
+/* 按键标记按钮：走到机器前点一下，日志里就知道哪一秒按了什么 */
+.marks-card { background: #101b2e; border-color: #24405f; }
+button.mk {
+  background: #24344d; border-color: #33486a; color: #cfe0f7;
+  font-weight: 600; font-size: 13px; padding: 11px 8px;
+}
+button.mk:active { background: #2f4463; }

@@ -15,6 +15,7 @@ const MOCK = `
   window.__calls = [];
   window.__pressAt = 0;      // 用 __press() 让机器进入出水状态
   window.__finishAt = 0;     // 用 __finish() 让机器结算
+  window.__endedAt = 0;      // 页面发了 goods/endWater 的时刻（真机：停水后约 1 秒 amount 才回填）
   const D = {
     'goods/scan/v2': {id:'10001', categoryCode:'04', categoryName:'3号饮水机', shopId:88,
       jumpToDevicePageFlag:false, jumpToAlipayFlag2:false},
@@ -24,7 +25,7 @@ const MOCK = `
     'waterQuota/getActive': {show:true, text:'水卡余额 ¥12.50 · 享 8 折'},
     'user/balance': {tokenCoin:1250},
     'user/checkLogin': {token:'mocktoken_0123456789abcdef'},
-    'goods/endWater': {},
+    'goods/endWater': {},   // 见下方 goods/water/sync 的 settled 判定
     'payChannelRoute/addUserAfterPayChannel': {},
     'order/sync': {code:'0', messageId:'msg_99001'},
     'order/detail': {
@@ -46,21 +47,20 @@ const MOCK = `
     if (path === 'goods/water/sync') {
       syncN++;
       let data;
-      if (!window.__pressAt) {
-        // workStatus 0 = 阀已开（屏幕显示「设备已解锁 N 秒 / 轻触【开始】键出水」），
-        // 但用户还没按【开始】，所以 amount 还是 0。
-        //
-        // 这里以前写成 workStatus:2，注释还编了个理由说「真机解锁后就已经是 2」。
-        // 后来 v1.0.8 / v1.1.3 正是拿这类臆测去否定 workStatus==2 这个判据，
-        // 结果真机上页面再也没进过「接水中」。别再改回 2。
-        //
-        // identify 也别给值：它是解锁时就下来的"建单凭据"，真机上扫码瞬间就有。
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};   // status1=已解锁，等用户按【开始】
-      } else if (!window.__finishAt) {
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:2};  // status2=正在出水
-      } else {
-        data = {workStatus:3, identify:'IDENTIFY_A', amount:'300', status:3};  // status3=本单结束
+      // 真机抓包（2026-11-08 02:39）：开阀之后到结算之前，无论用户按没按
+      // 机器上的【开始】，这三个字段一动不动 —— status 恒 1、workStatus 恒 2、
+      // amount 恒 null。只有结算那一刻才一起变。
+      // 所以这里不再用 status:2 假装「正在出水」，那会让「已就绪」在测试里
+      // 永远看不到，跟真机上一样的问题（只是反过来了）。
+      // 结算由「手机点结算 → 页面发 goods/endWater」触发。mock 收到停水后
+      // 约 1 秒让机器结算完成，amount 才回填（真机就是这样）。
+      const settled = window.__endedAt && (Date.now() - window.__endedAt) > 900;
+      if (settled) {
+        data = {workStatus:1, identify:'IDENTIFY_A',
+                amount: window.__pressAt ? '300' : null, status:5};
         if (!window.__settleAt) window.__settleAt = Date.now();
+      } else {
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};
       }
       await new Promise(r=>setTimeout(r,80));
       return J(data);
@@ -68,6 +68,11 @@ const MOCK = `
     if (path === 'order/afterPay/creating') {
       await new Promise(r=>setTimeout(r,300));
       return J({orderId:'ord_auto_1', orderNo:'0620261106009999999999', orderStatus:1, payType:'15'});
+    }
+    if (path === 'goods/endWater') {
+      if (!window.__endedAt) window.__endedAt = Date.now();
+      await new Promise(r=>setTimeout(r,60));
+      return J({});
     }
     if (path in D) {
       await new Promise(r=>setTimeout(r,60));
@@ -117,12 +122,14 @@ module.exports = async (page, { sleep, url }) => {
     out.settleCallsWhileWaiting = await page.evaluate(
       `(window.__calls||[]).filter(c=>c==='order/afterPay/creating').length`);
 
-    // 用户在机器上按「开始」，出水；再接 3 秒后点「结算」
+    // 用户在机器上按「开始」，出水；接 3 秒后点手机上的【结算】
+    // 注意：v1.1.7 起没有「接水中」这一屏，界面上永远只显示「已就绪」——
+    // 服务端不暴露出水状态（2026-11-08 02:39 抓包），这是有意的。
     await page.evaluate(`window.__pressAt = Date.now(); 'ok'`);
     await sleep(3600);
     out.flowing = await page.evaluate(snap);
-    await page.evaluate(`window.__finishAt = Date.now(); 'ok'`);
-    await sleep(3000);
+    await page.click('#actionBtn');                 // 点【结算】
+    await sleep(6000);
     out.done = await page.evaluate(snap);
     out.rows = await page.evaluate(`document.querySelector('#resultRows').textContent`);
     out.endWaterCalls = await page.evaluate(

@@ -2,25 +2,29 @@ const path = require('path');
 const SHOTS = process.env.SHOTS_DIR || path.join(__dirname, '..', 'shots');
 const shot = (name) => path.join(SHOTS, name);
 
-// 设备页四态回归（用户 m15839 定的口径，v1.1.3 按 sync.status 重写）。
+// 设备页回归（v1.1.7 口径）。
 //
-//  1) 扫码后 = 「已就绪」，主按钮写「取消」。此时**不能**自己跳「接水中」。
-//  2) 没在机器上按【开始】就直接在机器上按【结算】= 「接水已取消 / 未接水，未产生费用」，
-//     按钮改成「返回首页」（点它必须真的回首页，用户 m16749 问题 1），且**不建订单**。
-//  3) 在机器上按【开始】出水 = 「接水中」，主按钮变「结束接水」。
-//  4) 机器上按【暂停】= 「接水暂停中」，计时冻结（用户 m16749 问题 3）。
-//  5) 机器上按【结算】= 跳结算页，六行明细齐全。
+// 背景（用户 m19389 + 2026-11-08 02:39 真机抓包）：
+//   goods/water/sync 在「开阀 → 结算」之间只回 status=1 / workStatus=2 / amount=null，
+//   人在机器上按了【开始】【暂停】【继续】服务端一个字都不回，只有结算那一刻
+//   三个字段才一起变。所以「接水中 / 接水暂停中」这两屏做不出来，已经删掉。
 //
-// mock 的 status 必须按官方语义给，否则测的是假象：
-//   1 = 已解锁等按【开始】，2 = 正在出水，4 = 暂停，3/5 = 本单结束，6 = 故障
-// （依据：官方 h5 pages_waterMachine 的 switch，与 dex lambda$38/lambda$13 一致）
+// 现在设备页只有一个状态和一枚按钮：
+//   1) 扫码后 = 「已就绪」，按钮写「结算」，且**不能**自己跳走。
+//   2) 点【结算】时没接过水（amount 仍是 null/0）= 「接水已取消 / 未接水，未产生费用」，
+//      按钮变「返回首页」（点了必须真的回首页），且**不建订单**。
+//   3) 点【结算】时接过水（amount > 0）= 跳结算页，六行明细齐全。
+//   4) 机器上自己按【结算】（status 变 5、workStatus 回 1）也走同一条判断。
+//
+// mock 的取值全部照抄 2026-11-08 02:39 那份真机抓包，不是猜的：
+//   等待期  status=1  workStatus=2  amount=null
+//   结算后  status=5  workStatus=1  amount=59（没接水的单仍是 null）
 const MOCK = `
 (function(){
   let syncN = 0;
   window.__calls = [];
-  window.__pressAt = 0;    // 机器上按【开始】的时刻；0 = 还没按
-  window.__pauseAt = 0;    // 机器上按【暂停】的时刻
-  window.__finishAt = 0;   // 机器上按【结算】的时刻
+  window.__pressAt = 0;    // 机器上按【开始】的时刻；0 = 还没按（决定 amount 回不回填）
+  window.__endedAt = 0;    // 收到 goods/endWater 的时刻。真实机器随后自己结算、amount 才回填
   const D = {
     'goods/scan/v2': {id:'10001', categoryCode:'04', categoryName:'3号饮水机', shopId:88,
       jumpToDevicePageFlag:false, jumpToAlipayFlag2:false},
@@ -49,25 +53,26 @@ const MOCK = `
       await new Promise(r=>setTimeout(r,120));
       return J({msgId:'m_1', orderNo:'QK202411060001'});
     }
+    if (p === 'goods/endWater') {
+      // 收到停水指令后，真实机器约 1 秒自己结算，amount 才回填。
+      // mock 必须照这个来，否则页面永远等不到 amount，只能超时。
+      if (!window.__endedAt) window.__endedAt = Date.now();
+      return J({});
+    }
     if (p === 'goods/water/sync') {
       syncN++;
       let data;
-      if (window.__finishAt) {
-        // 机器上按了【结算】= status 3。关键：**没接过水的单 amount 必须仍是 0** ——
-        // 真机上没出水就没有计量。这里要是也写正数，等于帮代码把所有单都当成"接过水"，
-        // 「扫码后没接水直接结算 → 接水已取消」这条就永远测不出来。
+      // 停水后约 1 秒机器结算完成
+      const settled = window.__endedAt && (Date.now() - window.__endedAt) > 900;
+      if (settled) {
+        // 结算之后。关键：**没按过【开始】的单 amount 必须还是 null** ——
+        // 真机上没出水就没有计量。这里要是也给正数，等于帮代码把所有单都当成
+        // "接过水"，「没接水 → 接水已取消」这条就永远测不出来（以前踩过）。
         data = {workStatus:1, identify:'IDENTIFY_A',
                 amount: window.__pressAt ? '59' : null, status:5};
-      } else if (!window.__pressAt) {
-        // 已解锁、等用户按【开始】：status 1，一滴水没出，amount 0
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};
-      } else if (window.__pauseAt) {
-        // 暂停 = status 4，amount 冻在暂停那一刻的值不再增长
-        const frozen = Math.max(1, Math.round((window.__pauseAt - window.__pressAt) / 1200));
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:4};
       } else {
-        // 正在出水 = status 2，amount 持续增长
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:2};
+        // 开阀之后、结算之前：真机上这三个字段一动不动，无论用户按没按开始。
+        data = {workStatus:2, identify:'IDENTIFY_A', amount:null, status:1};
       }
       await new Promise(r=>setTimeout(r,80));
       return J(data);
@@ -89,7 +94,8 @@ const SNAP = `({
   btnDisabled:document.querySelector('#actionBtn').disabled,
   state:document.querySelector('#stateTitle').textContent,
   sub:document.querySelector('#stateSub').textContent,
-  amount:document.querySelector('#flowAmount').textContent
+  amount:document.querySelector('#flowAmount').textContent,
+  flowHidden:document.querySelector('#flowLine').classList.contains('hidden')
 })`;
 
 // 轮询等某个条件成立再快照，避免拍到中间态（本地跑得比线上快，固定 sleep 会飘）
@@ -121,15 +127,15 @@ module.exports = async (page, { sleep, url }) => {
     await page.S('Page.reload', { ignoreCache: true });
     await sleep(1200);
 
-    // ── 场景 A：扫码后什么都不按，直接在机器上点【结算】 ────────────────
+    // ── 场景 A：扫码后什么都不按，直接点手机上的【结算】──────────────
     await page.evaluate(`handleScanned('https://m.qiekj.com/s?SN=NQT2024001&c=04'); 'ok'`);
     out.ready = await snapWhen(page, sleep, s => s.state === '已就绪', 8000);
-    // 再等 4 秒，确认它没自己跳到「接水中」
+    // 再等 4 秒，确认它不会自己跳走（没按开始，服务端什么都不回）
     await sleep(4000);
     out.readyAfter4s = await page.evaluate(SNAP);
 
-    await page.evaluate(`window.__finishAt = Date.now(); 'ok'`);
-    out.cancelled = await snapWhen(page, sleep, s => s.state === '接水已取消', 10000);
+    await page.click('#actionBtn');     // 点【结算】
+    out.cancelled = await snapWhen(page, sleep, s => s.state === '接水已取消', 25000);
     out.cancelSettleCalls = await page.evaluate(
       `(window.__calls||[]).filter(c=>c==='order/afterPay/creating').length`);
     out.cancelStateIsDevice = (out.cancelled.screen || []).indexOf('device') >= 0;
@@ -145,37 +151,27 @@ module.exports = async (page, { sleep, url }) => {
     })`);
     out.cancelBtnGoesHome = (out.afterCancelClick.screen || []).indexOf('home') >= 0;
 
-    // ── 场景 B：重新扫码 → 机器上按【开始】→ 接水中 ──────────────────────
-    await page.evaluate(`window.__pressAt = 0; window.__pauseAt = 0; window.__finishAt = 0; 'ok'`);
+    // ── 场景 B：重新扫码 → 机器上按了【开始】→ 点【结算】→ 结算页 ──────
+    await page.evaluate(`window.__pressAt = 0; window.__endedAt = 0; 'ok'`);
     await page.evaluate(`handleScanned('https://m.qiekj.com/s?SN=NQT2024001&c=04'); 'ok'`);
     await snapWhen(page, sleep, s => s.state === '已就绪', 8000);
+    // 人在机器上按了【开始】，出水 5 秒（服务端不告诉我们，只能等结算回填）
     await page.evaluate(`window.__pressAt = Date.now(); 'ok'`);
-    out.flowing = await snapWhen(page, sleep, s => s.state === '接水中', 10000);
-    await page.shot(shot('states-2-flowing.png'));
-
-    // ── 场景 C：机器上按【暂停】→ 接水暂停中 ────────────────────────────
-    await page.evaluate(`window.__pauseAt = Date.now(); 'ok'`);
-    out.paused = await snapWhen(page, sleep, s => s.state === '接水暂停中', 12000);
-    const amtA = out.paused.amount;
-    await sleep(3000);
-    out.pausedHeld = await page.evaluate(`({state:document.querySelector('#stateTitle').textContent,
-      amount:document.querySelector('#flowAmount').textContent})`);
-    out.amountFrozen = amtA === out.pausedHeld.amount;
-    await page.shot(shot('states-3-paused.png'));
-
-    // ── 场景 D：机器上按【结算】→ 结算页 ────────────────────────────────
-    await page.evaluate(`window.__finishAt = Date.now(); 'ok'`);
+    await sleep(5000);
+    out.flowingStillReady = await page.evaluate(SNAP);   // 接线中本来就不该跳，确认仍是已就绪
+    await page.click('#actionBtn');
     out.done = await snapWhen(page, sleep,
-      s => (s.screen || []).indexOf('result') >= 0, 20000);
+      s => (s.screen || []).indexOf('result') >= 0, 25000);
     out.rows = await page.evaluate(`document.querySelector('#resultRows').textContent`);
     out.msg = await page.evaluate(`document.querySelector('#resultMsg').textContent`);
     out.unlocks = (await calls()).filter(c => c === 'goods/water/unlock').length;
-    await page.shot(shot('states-4-result.png'));
+    await page.shot(shot('states-2-result.png'));
 
     // 断言汇总
     out.ok =
       out.ready.state === '已就绪' &&
-      out.ready.btn === '取消' &&
+      out.ready.btn === '结算' &&
+      out.ready.flowHidden === true &&
       out.readyAfter4s.state === '已就绪' &&
       out.cancelled.state === '接水已取消' &&
       out.cancelled.sub === '未接水，未产生费用' &&
@@ -184,13 +180,11 @@ module.exports = async (page, { sleep, url }) => {
       out.cancelBtnEnabled === true &&
       out.cancelBtnLabel === '返回首页' &&
       out.cancelBtnGoesHome === true &&
-      out.flowing.state === '接水中' &&
-      out.flowing.btn === '结束接水' &&
-      out.paused.state === '接水暂停中' &&
-      out.amountFrozen === true &&
+      out.flowingStillReady.state === '已就绪' &&
       (out.done.screen || []).indexOf('result') >= 0 &&
       out.msg.indexOf('支付宝免密') >= 0 &&
-      out.rows.indexOf('用水量') >= 0;
+      out.rows.indexOf('用水量') >= 0 &&
+      out.unlocks >= 2;
     return out;
   } catch (e) {
     out.ERR = String(e && e.stack || e);
