@@ -113,12 +113,11 @@ module.exports = async (page, { sleep, url }) => {
       `(window.__calls||[]).filter(c=>c==='order/afterPay/creating').length`);
 
     // ---- 取消路径 ----
-    // 设备页主按钮现在是「开始接水」（对应机器面板的【开始】），取消挪到了
-    // 三键条里的【取消】。必须点 #btnCancel，点主按钮只会进入接水中。
+    // 三键条已按用户要求删掉：设备页只剩一个主按钮，#actionBtn 在「已就绪」时
+    // 文案就是【取消】。点它 = 从这一端结束这一单（没接过水，直接停阀不建单）。
     out.btnWhileWaiting = await page.evaluate(`document.querySelector('#actionBtn').textContent`);
-    out.cancelBtnVisible = await page.evaluate(
-      `!document.querySelector('#btnCancel').classList.contains('hidden')`);
-    await page.click('#btnCancel');
+    out.cancelBtnVisible = out.btnWhileWaiting === '取消';
+    await page.click('#actionBtn');
     await sleep(1800);
     out.afterCancel = await page.evaluate(snap);
     out.cancelSettleCalls = await page.evaluate(

@@ -1190,30 +1190,6 @@ function setRing(pct) {
   if (el) el.style.setProperty('--deg', deg.toFixed(1) + 'deg');
 }
 
-/**
- * 显示/隐藏「暂停 · 结算 · 取消」这一排。
- *
- * 为什么要有：饮水机面板上是【开始】【暂停】【结算】三个实体键，用户希望手机上
- * 能看到对应的按钮。但服务端**没有**开阀、暂停、结算这类控制接口 —— 已把官方
- * APK 的 12 个 dex 穷举过，goods/* 下只有 unlock / sync / endWater，没有任何
- * "开始接水"或"暂停"的端点。所以：
- *   · 结算 → 真的起作用（走 goods/endWater + 建单结算，等于从这一端结束这一单）
- *   · 暂停 → 只能改本机显示，并在文案里告诉用户去按机器上的【暂停】
- *   · 取消 → 真的起作用（endWater 停水，不建单）
- *
- * mode: 'wait' 只有【取消】（还没出水，没什么可暂停/结算的）；
- *       'flow' 三个都有。
- */
-function showFlowActions(mode) {
-  const box = $('#flowActions');
-  if (!box) return;
-  box.classList.toggle('hidden', !mode);
-  const p = $('#btnPause'), s = $('#btnSettle');
-  const onlyCancel = mode === 'wait';
-  if (p) p.classList.toggle('hidden', onlyCancel);
-  if (s) s.classList.toggle('hidden', onlyCancel);
-}
-
 /* ---------------- 接水主流程 ---------------- */
 let busy = false;
 let stopRequested = false;
@@ -1225,13 +1201,6 @@ let sessionSeq = 0;
    等待期水还没出，这时候没必要把用户锁在设备页上 —— 90 秒的等待里
    连返回键都按不动，纯属困住用户。只有 watering 为真才拦。 */
 let watering = false;
-/* 用户点了 App 上的「开始接水」。饮水机面板的【开始】是实体键，服务端没有开阀接口，
-   点这个按钮只是让本机先切到「接水中」，真正出水仍要用户去按机器。
-   有了它，同步轮询就能在"用户以为已经开始"之后立刻给出反馈，而不是等他按机器。 */
-let wantFlow = false;
-/* 本机显示的「暂停」状态。服务端没有暂停接口，这只是让「已接 N 秒」停止累加，
-   并在文案里提醒用户去按机器上的【暂停】。真正的停水由机器面板完成。 */
-let paused = false;
 
 async function startWater() {
   // 不能静默 return —— 用户点了没反应会以为坏了，这里一律给出可见反馈
@@ -1313,43 +1282,32 @@ async function startWater() {
     const msgId = unlock && unlock.msgId;
     const orderNo0 = unlock && unlock.orderNo;
 
-    // 扫码即开阀之后，用户可能还没来得及按机器上的「开始」。
-    // 这段时间 workStatus 还不是 RUNNING —— 不能像以前那样一看到非 RUNNING 就当成
-    // 「已经结算完」去建订单，否则会出现一张 0 元的废单。所以要有等待期。
-    setState('已就绪', '按机器上的「开始」，或点下方按钮');
+    // 扫码即开阀之后，用户可能还没来得及按机器上的【开始】。
+    // 这段时间 workStatus 已经是 2 了，但一滴水都没出 —— 不能一看到它就当成
+    // 「正在出水」，否则「已就绪」只会维持一次轮询（约 1.2 秒）。
+    // 这里不放任何"开始/暂停/结算"按钮：服务端没有开阀和暂停接口（已把官方 APK 的
+    // 12 个 dex 穷举确认过，goods/* 下只有 unlock / sync / endWater），
+    // 按钮点了也驱不动机器，只会让用户以为坏了。状态一律跟着机器面板走。
+    setState('已就绪', '请在机器上按【开始】');
     setRing(6);
-    btn.textContent = '开始接水';
+    btn.textContent = '取消';
     btn.disabled = false;
-    showFlowActions('wait');
 
     let last = null, ticks = 0, userStopped = false;
-    let seenRunning = false, waitTicks = 0, netFailed = false, machineEnded = false;
-    // 机器被解锁后 workStatus 就已经是 2 了，但那时用户还没按「开始」，一滴水都没出。
+    let seenRunning = false, waitTicks = 0, netFailed = false;
+    // 机器被解锁后 workStatus 就已经是 2 了，但那时用户还没按【开始】，一滴水都没出。
     // 所以还得单独记一个「解锁过」的标记，用来区分「解锁后一直没出水就结束」。
     let sawActive = false;
     let waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
     // 解锁那一刻 sync.amount 的基线值。之后只有比它大才算"出水了"。
     let baseAmount = null;
-    // 用户在这个会话里点过 App 上的「开始接水」没有。点了就先把界面切到「接水中」，
-    // 让"我按了开始"这件事立刻有反馈；但**是否真的出水**仍然只看 amount 增长，
-    // 所以这个标记不能当成 seenRunning 用 —— 否则用户点了按钮却一直没去机器上按开始，
-    // 最后会被当成"接过水"，去建一张 0 元废单。
-    let userStarted = false;
+    // 出水之后 amount 连续几轮没再增长。用来识别机器上按了【暂停】。
+    let stillTicks = 0;
+    let pausedShown = false;
     // 约 90 秒等用户按机器上的开始。测试里可以用 window.__startWaitTicks 缩短。
     const START_WAIT_TICKS = window.__startWaitTicks || 75;
     while (true) {
       if (stopRequested) { userStopped = true; break; }
-      // 点了 App 上的「开始接水」：不必等下一轮同步，先把本机状态切过去。
-      if (wantFlow && !userStarted) {
-        userStarted = true;
-        wantFlow = false;
-        watering = true;
-        setState('接水中', '请按机器上的「开始」出水');
-        setRing(12);
-        btn.textContent = '结束接水';
-        btn.disabled = false;
-        showFlowActions('flow');
-      }
       await sleep(1200);
       if (stopRequested) { userStopped = true; break; }
       if (superseded()) return await abandonSession(dev);   // 用户已经去接另一台了
@@ -1383,53 +1341,53 @@ async function startWater() {
       // 相对**解锁那一刻的基线**是否增长：待命时它是个定值，出水后才会变大。
       const amt = Number(last.amount) || 0;
       if (baseAmount === null) baseAmount = amt;
-      const consumed = amt > baseAmount;
-      if (consumed && !seenRunning) {
-        // 第一次看到有消费 = 用户按了机器上的开始，水真的出来了
+      const grew = amt > baseAmount;
+      if (amt > baseAmount) baseAmount = amt;   // 基线只进不退
+
+      if (grew && !seenRunning) {
+        // 第一次看到有消费 = 用户按了机器上的【开始】，水真的出来了
         seenRunning = true;
         watering = true;
-        setState('接水中', '水已开，正在计量');
+        stillTicks = 0;
+        setState('接水中', '正在计量');
         setRing(12);
         btn.textContent = '结束接水';
         btn.disabled = false;
-        showFlowActions('flow');
-      } else if (consumed && !watering) {
-        // 用户自己按了 App 上的「暂停」，之后又在机器上按了开始继续接 —— 水又流起来了
-        watering = true;
-        setState('接水中', '水已开，正在计量');
-        showFlowActions('flow');
       }
-      if (seenRunning && active) {
-        // 本机点了「暂停」就不再累加时长 —— 但出水与否以机器为准，所以只停计时，
-        // 不改 watering（用户仍在这一单里，返回键仍要拦住）。
-        if (!paused) {
+
+      if (seenRunning) {
+        if (grew) {
+          stillTicks = 0;
+          if (pausedShown) {
+            // 用户又按了机器上的【开始】，接着出水
+            pausedShown = false;
+            setState('接水中', '正在计量');
+          }
           waterTicks++;
           $('#flowAmount').textContent = fmtElapsed(waterTicks * 1.2);
           setRing(Math.min(95, 12 + waterTicks * 3));
+        } else {
+          stillTicks++;
+          // 连着 3 轮（约 3.6 秒）amount 一动不动，而机器仍在这一单里 ——
+          // 这就是用户在机器上按了【暂停】。暂停时 workStatus 仍然是 2，
+          // 光看它区分不出「在出水」和「停着没动」，只能看 amount 还长不长。
+          if (!pausedShown && active && stillTicks >= 3) {
+            pausedShown = true;
+            setState('接水暂停中', '机器已暂停');
+            setRing(Math.min(95, 12 + waterTicks * 3));
+          }
         }
-      } else if (!seenRunning) {
-        // 还没出水，这一轮仍在等用户按「开始」
+        // 出过水之后 workStatus 一离开 2 = 机器上按了【结算】，去出账
+        if (!active) break;
+      } else {
+        // 还没出水，这一轮仍在等用户按【开始】
         if (active) {
-          // 点了 App 上的按钮的，说明用户已经"以为开始"了，文案要往前推一步：
-          // 他多半正站在机器前等着，得告诉他水还没出来、要按机器上的键。
-          if (userStarted) setState('接水中', '水还没出来，请按机器上的「开始」');
-          else setState('已就绪', '按机器上的「开始」，或点下方按钮');
           sawActive = true;
-        } else if (sawActive) {
-          // 解锁过（屏幕显示「设备已解锁」），但一直没按开始，然后机器自己收口了
-          machineEnded = true;
-          break;
-        } else if (ws !== WORK_IDLE) {
-          // 从头到尾没解锁：unlock 没生效，或者在别的机器上结束了
-          machineEnded = true;
+        } else if (sawActive || ws !== WORK_IDLE) {
+          // 解锁过但一直没按【开始】，然后机器自己收口了（在机器上点了结算）
           break;
         }
         if (++waitTicks > START_WAIT_TICKS) break;
-      } else if (!active) {
-        // 出过水，现在 active 变 false = 机器上点结算了。
-        // 和官方一致：官方就是 `do { sync } while (workStatus == 2)`，
-        // workStatus 一离开 2 就退出循环去结算，不额外等。
-        break;
       }
       if (ticks > 600) break;
     }
@@ -1446,23 +1404,19 @@ async function startWater() {
       // 断网退出要说"网络不稳"，别用「已取消」把它盖掉 —— 用户看到「没有在机器上按开始」
       // 会以为是自己的操作问题，其实是根本没连上服务器。
       if (netFailed) {
-        setState('网络不稳', '连不上服务器，请检查网络后重试');
+        setState('网络不稳', '请检查网络后重试');
       } else {
-        // 「扫码后一滴水没接」的所有走法都归到这里：手机上点取消、机器上按结算、
-        // 或者干脆放着不管超时。对用户来说这三件事的结果是一样的 —— 没接水、没花钱，
-        // 所以文案统一成一句，别再去区分是"谁"结束的（以前分「已结算」和「已取消」，
-        // 用户看到两套说法反而以为出了两回事）。
-        setState('已取消', '本次没有接水，未产生费用');
+        // 「扫码后一滴水没接」的走法都归到这里：在机器上按了结算、在机器上什么都不按、
+        // 或者在手机/网页上点了【取消】。对用户来说结果一样 —— 没接水、没花钱。
+        setState('接水已取消', '未接水，未产生费用');
       }
       setRing(0);
-      btn.textContent = '开始接水';
-      btn.disabled = false;
-      showFlowActions(false);
+      btn.textContent = '取消';
+      btn.disabled = true;
       const fl = $('#flowLine');
       if (fl) fl.classList.add('hidden');
       busy = false;
       stopRequested = false;
-      wantFlow = false;
       return;
     }
 
@@ -1472,10 +1426,8 @@ async function startWater() {
     // 用户点了没反应 —— 他看到的"反应太慢"就是这个。
     stopRequested = false;
     watering = false;
-    wantFlow = false;
     btn.textContent = '结算中…';
     btn.disabled = true;
-    showFlowActions(false);
 
     if (userStopped) {
       setState('正在结束', '已发送停水指令…');
@@ -1611,11 +1563,6 @@ function resetDevicePanel() {
   }
   setRing(0);
   setState('准备就绪', '点击下方按钮开始接水');
-  showFlowActions(false);
-  paused = false;
-  wantFlow = false;
-  const pb = $('#btnPause');
-  if (pb) pb.textContent = '暂停';
   const fl = $('#flowLine');
   if (fl) fl.classList.add('hidden');
   const fa = $('#flowAmount');
@@ -1769,41 +1716,13 @@ function bind() {
   };
   $('#actionBtn').onclick = () => {
     const label = $('#actionBtn').textContent;
-    // 「取消」是扫码后自动开阀、用户还没在机器上按开始时的出口：
-    // 这时 busy 为 true，必须先放行一次，否则按钮点了没反应。
-    if (label === '结束接水' || label === '取消') return stopWater();
-    if (busy) {
-      // 等待期 busy 一直是 true，但按钮写的是「开始接水」—— 这时候点它不该被挡住。
-      // 它只是把本机显示切到「接水中」，真正出水还得靠机器面板。
-      if (label === '开始接水') { wantFlow = true; setState('接水中', '请按机器上的「开始」出水'); showFlowActions('flow'); }
-      return;
-    }
-    if (label === '开始接水' && current && current.sku) { wantFlow = true; }
+    // 已就绪时这是「取消」，接水中/暂停时是「结束接水」，结算中是禁用态。
+    // 两者都是"从这一端结束这一单"：取消 = 没接过水，直接停阀不建单；
+    // 结束接水 = 已接过水，停阀后走结算。真正的区分在 stopWater/会话里做。
+    if (label === '取消' || label === '结束接水') return stopWater();
+    if (busy) return toast('正在处理，请稍候', true);
     startWater();
   };
-  // 对应机器面板的【暂停】。服务端没有暂停接口，只能改本机显示 + 引导用户。
-  // 单独的 paused 变量：不能复用 watering —— 那个是"要不要把用户锁在设备页"，
-  // 暂停时用户仍然该被锁住（这一单还没结算完）。
-  const pauseBtn = $('#btnPause');
-  if (pauseBtn) pauseBtn.onclick = () => {
-    if (!busy) return toast('现在没有进行中的接水', true);
-    if (!paused) {
-      paused = true;
-      pauseBtn.textContent = '继续';
-      setState('已暂停', '请按机器上的【暂停】停水；要继续按【开始】');
-    } else {
-      paused = false;
-      pauseBtn.textContent = '暂停';
-      setState('接水中', '水已开，正在计量');
-    }
-  };
-  // 对应机器面板的【结算】。这个真的能生效：走 endWater + 正常结算流程。
-  const settleBtn = $('#btnSettle');
-  if (settleBtn) settleBtn.onclick = () => {
-    if (busy) stopWater(); else toast('现在没有进行中的接水', true);
-  };
-  const cancelBtn = $('#btnCancel');
-  if (cancelBtn) cancelBtn.onclick = () => { if (busy) stopWater(); else leaveDevice(); };
   // 结算页的出口：完成 → 首页；浏览器返回键 → 首页（见 popstate）。
   // 需要再接水时在首页点扫码，不在这里堆快捷方式。
   $('#btnDone').onclick = () => { leaveDevice(); refreshQuotaBadge(); };
