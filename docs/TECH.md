@@ -358,12 +358,26 @@ order/detail             orderId          → waterUse.waterUseValueDesc, tradeO
 > 而真实原价是 ¥0.04）。官方 `DeviceStartupAct.createObserver$lambda$38` 只用它做判断：
 > `amount` 非空且 `>0` 且有 `identify` 时才调 `afterPay(identify)`，从不展示给用户。
 >
-> **别拿 `amount` 判"水有没有出来"**（v1.1.3 修的就是这个）：服务端直到收口才回填它，
-> 十几秒的短单从头到尾都是 `0`。判断面板状态要用 `status`：
-> `1` 等按开始 / `2` 正在出水 / `4` 暂停 / `3`、`5` 收口该出账 / `6` 设备异常。
-> 依据是 h5 `pages_waterMachine` 的 `checkChannelStatus`（`case 1/2/4: return`，`3/5` 出账，`6` 收口）
-> 与 dex `DeviceStartupAct.lambda$38`、`StartStatusAct.lambda$13` 完全一致。
-> `workStatus` 在暂停时仍是 `2`，官方 UI 从不读它。
+> **判「水有没有出来」只能用 `workStatus`**（v1.1.4 修的就是这个）：
+> `0`/`1` = 阀已开、还没按【开始】；`2` = 正在出水。这是 v1.0.7 就在用、
+> 并且在真机上验证过有效的判据。
+>
+> 两个曾经被误用的判据，都别再碰：
+> - **`amount`**：服务端直到收口才回填，十几秒的短单从头到尾都是 `0`。
+>   官方 `lambda$38` 也只拿它在收口时决定「这单要不要出账」，不用于判出水。
+> - **`status`**：`1/2/4/3/5/6` 这套语义来自官方 h5 的**另一个接口**
+>   `machine/water/sync`（参数 `machineFunctionId`），我们调的 `goods/water/sync`
+>   （参数 `skuId`）并不保证返回它。dex `lambda$38` 除了对 `3/5/6` 特殊处理，
+>   其余值一律原样放行，没有任何单独语义。
+>
+> `workStatus` 在暂停时仍是 `2`，暂停只能靠 `sync.status` 变了没有去推断
+> （数面板按了几次，奇数次=暂停）。接口不给 `status` 就认不出暂停 —— 这种情况
+> 宁可不动，也不能因此把「接水中」一起吃掉。
+>
+> **教训**：`tools/*.js` 与 `tools/make_test.py` 的 mock 里曾经把等待态的
+> `workStatus` 写成 `2` 并注释「真机就是这样」，那句注释是臆测。正是它让
+> v1.0.8 / v1.1.3 有底气去否定 `workStatus==2`。**mock 必须等同真机，
+> 不确定就写 `0`（v1.0.7 语义），不要给未验证的假设编理由。**
 >
 > 正确的结算字段来自 `order/detail`：水量用 `waterUse.waterUseValueDesc`（已带单位，按
 > `waterUseType==1` 显示「用水量」否则「用水时长」），金额用 `tradeOrderItem[].originPrice`

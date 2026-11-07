@@ -56,11 +56,11 @@ const MOCK = `
         // 机器上按了【结算】= status 3。关键：**没接过水的单 amount 必须仍是 0** ——
         // 真机上没出水就没有计量。这里要是也写正数，等于帮代码把所有单都当成"接过水"，
         // 「扫码后没接水直接结算 → 接水已取消」这条就永远测不出来。
-        data = {workStatus:2, identify:'IDENTIFY_A',
+        data = {workStatus:3, identify:'IDENTIFY_A',
                 amount: window.__pressAt ? '300' : '0', status:3};
       } else if (!window.__pressAt) {
         // 已解锁、等用户按【开始】：status 1，一滴水没出，amount 0
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:1};
+        data = {workStatus:0, identify:'IDENTIFY_A', amount:'0', status:1};
       } else if (window.__pauseAt) {
         // 暂停 = status 4，amount 冻在暂停那一刻的值不再增长
         const frozen = Math.max(1, Math.round((window.__pauseAt - window.__pressAt) / 1200));

@@ -47,13 +47,15 @@ const MOCK = `
       syncN++;
       let data;
       if (!window.__pressAt) {
-        // 真机解锁后 workStatus 就已经是 2 了（屏幕显示「设备已解锁 (6)秒 / 轻触【开始】键出水」），
-        // 但用户没按开始，所以 amount 还是 0、identify 还是空。以前 mock 写的是 0，
-        // 于是「把 2 当成正在出水」这个 bug 在测试里根本照不出来。
+        // workStatus 0 = 阀已开（屏幕显示「设备已解锁 N 秒 / 轻触【开始】键出水」），
+        // 但用户还没按【开始】，所以 amount 还是 0。
+        //
+        // 这里以前写成 workStatus:2，注释还编了个理由说「真机解锁后就已经是 2」。
+        // 后来 v1.0.8 / v1.1.3 正是拿这类臆测去否定 workStatus==2 这个判据，
+        // 结果真机上页面再也没进过「接水中」。别再改回 2。
         //
         // identify 也别给值：它是解锁时就下来的"建单凭据"，真机上扫码瞬间就有。
-        // 早期版本拿 identify 当出水信号，结果「已就绪」只维持一次轮询就跳成「接水中」。
-        data = {workStatus:2, identify:'IDENTIFY_A', amount:'0', status:1};   // status1=已解锁，等用户按【开始】
+        data = {workStatus:0, identify:'IDENTIFY_A', amount:'0', status:1};   // status1=已解锁，等用户按【开始】
       } else if (!window.__finishAt) {
         data = {workStatus:2, identify:'IDENTIFY_A', amount:String(60*syncN), status:2};  // status2=正在出水
       } else {

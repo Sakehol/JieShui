@@ -1208,11 +1208,22 @@ public class MainActivity extends Activity {
                 boolean sawActive = false;
                 int waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
                 boolean everGrew = false;  // 整个会话 amount 涨过基线没有
-                // 面板状态（sync.status）。这是唯一能区分「出水 / 暂停」的字段。
-                int lastStatus = -1;
+                int stillTicks = 0;        // 连续多少轮没出水，用来在没有 status 时猜暂停
+                boolean pausedShown = false;
+                // 面板状态（sync.status）。每次变化 = 机器面板上被按了一下。
+                // 只数「变了没有」，不猜具体取值：dex 里除了 3/5/6 之外的值
+                // 官方都只当"继续等"，没有单独语义。
+                int prevSt = -99;          // -99 = 还没看到过
+                int panelChanges = 0;
                 boolean wateringNow = false;   // 当前是否在出水
-                // 解锁那一刻 sync.amount 的基线。-1 表示还没取到。
-                double baseAmount = -1;
+                // 解锁那一刻的快照。之后拿它当基准，看哪个字段「动过」。
+                double baseAmount = -1;    // -1 表示还没取到
+                int baseWs = -99;
+                int initialSt = -99;
+                String initialId = "";
+                boolean idInit = false;
+                boolean started = false;   // 用户已经在机器上按过【开始】
+                boolean sawRealSignal = false;   // 见过真信号，用来判断有没有接过水
                 final int START_WAIT_TICKS = 75;   // 约 90 秒等用户按机器上的开始
                 while (true) {
                     if (stopRequested) {
@@ -1274,11 +1285,6 @@ public class MainActivity extends Activity {
                     // 服务端直到收口才回填 amount，短单全程是 0 —— 于是「按了开始
                     // 不跳转」「按了暂停看不出来」「扣了费却说没接水」全来了。
                     double amt = numOf(sync.optString("amount", "0"));
-                    if (baseAmount < 0) baseAmount = amt;
-                    if (amt > baseAmount) {          // 基线只进不退
-                        baseAmount = amt;
-                        everGrew = true;
-                    }
                     String stRaw = sync.optString("status", "");
                     boolean hasSt = stRaw != null && stRaw.length() > 0
                             && !"null".equals(stRaw) && !"undefined".equals(stRaw);
@@ -1286,15 +1292,50 @@ public class MainActivity extends Activity {
                     boolean endedByStatus = hasSt && (st == 3 || st == 5);
                     boolean fault = hasSt && st == 6;
 
-                    if (hasSt) {
-                        lastStatus = st;
-                        if (st == 2) wateringNow = true;
-                        else if (st == 4) wateringNow = false;      // 暂停
-                        else if (st == 1) wateringNow = false;      // 还没按开始
+                    // 第一轮 sync 一定发生在「刚解锁、用户还没按机器上的【开始】」的时候，
+                    // 拿它当基准快照：之后只要三个字段里任何一个跟它不一样，
+                    // 就说明面板被按了。
+                    if (baseAmount < 0) {
+                        baseAmount = amt;
+                        baseWs = ws;
+                        initialSt = st;
+                        initialId = str(sync, "identify");
+                        idInit = true;
+                    }
+                    if (amt > baseAmount) {          // 基线只进不退
+                        baseAmount = amt;
+                        everGrew = true;
+                    }
 
-                        if (wateringNow) {
+                    // ── 出水判定 ─────────────────────────────────────────────
+                    // 就按 v1.0.7 的规则来，那是真机上唯一被验证过有效的：
+                    //   workStatus 0/1 = 阀已开、用户还没按机器上的【开始】 → 已就绪
+                    //   workStatus 2   = 机器正在出水                        → 接水中
+                    // v1.0.8 我误信了自己写在 mock 注释里的「真机解锁后 workStatus 就是 2」，
+                    // 把它换成 amount>0；v1.1.3 又换成 status==2。两次都是拿臆测去否定
+                    // workStatus，于是页面从此再也进不了「接水中」——用户反复报的就是这个。
+                    // 宁可「已就绪」短一点，也不能把状态卡死。
+                    wateringNow = active;
+                    if (active) {
+                        started = true;
+                        sawRealSignal = true;   // workStatus==2 = 机器真的在出水
+                    }
+
+                    // 暂停 / 继续：出水之后面板再被按一次就翻转一次。
+                    // 只数「变了没有」，不认具体取值（dex 里除 3/5/6 外官方都不区分）。
+                    if (started && hasSt && !endedByStatus && !fault) {
+                        if (prevSt == -99) {
+                            prevSt = st;
+                        } else if (st != prevSt) {
+                            prevSt = st;
+                            panelChanges++;
+                        }
+                        if (panelChanges % 2 == 1) wateringNow = false;   // 奇数次 = 暂停
+                    }
+
+                    if (wateringNow) {
+                        if (!seenRunning) {
                             seenRunning = true;
-                            watering = true;
                             ui.post(() -> {
                                 stateTitle.setText("接水中");
                                 stateSub.setText("正在计量");
@@ -1303,9 +1344,20 @@ public class MainActivity extends Activity {
                                     actionBtn.setEnabled(true);
                                 }
                             });
-                        } else if (st == 4 && seenRunning) {
-                            // 出水过后变成 4 = 用户在机器上按了【暂停】。计时冻结。
-                            watering = false;
+                        } else if (pausedShown) {
+                            pausedShown = false;                    // 从暂停恢复
+                            ui.post(() -> {
+                                stateTitle.setText("接水中");
+                                stateSub.setText("正在计量");
+                            });
+                        }
+                        watering = true;
+                        stillTicks = 0;
+                    } else if (seenRunning) {
+                        // 出过水之后又停了 = 用户在机器上按了【暂停】。计时冻结。
+                        watering = false;
+                        if (!pausedShown) {
+                            pausedShown = true;
                             ui.post(() -> {
                                 stateTitle.setText("接水暂停中");
                                 stateSub.setText("机器已暂停");
@@ -1315,18 +1367,6 @@ public class MainActivity extends Activity {
                                 }
                             });
                         }
-                    } else if (everGrew) {
-                        // 接口没给 status（极少见）时退回老判据：amount 涨过就当在出水
-                        if (!seenRunning) {
-                            seenRunning = true;
-                            watering = true;
-                            ui.post(() -> {
-                                stateTitle.setText("接水中");
-                                stateSub.setText("正在计量");
-                                if (actionBtn != null) actionBtn.setText("结束接水");
-                            });
-                        }
-                        wateringNow = true;
                     }
 
                     if (wateringNow) {
@@ -1339,12 +1379,11 @@ public class MainActivity extends Activity {
                     }
 
                     if (endedByStatus || fault) break;    // 机器收口 / 故障
-                    // 有 status 就以它为准；只有拿不到 status 时才退回 workStatus。
-                    // （暂停时 workStatus 会不会变，真机没验过，不能拿它当收口判据）
-                    if (!hasSt && !active) break;
+                    // workStatus 离开 2 = 机器上按了结算。这是 v1.0.x 的收口判据，可靠。
+                    if (!active && seenRunning) break;
                     if (!seenRunning) {
                         if (active) sawActive = true;
-                        if (!hasSt && !active && (sawActive || ws != Api.WORK_IDLE)) {
+                        else if (sawActive || ws != Api.WORK_IDLE) {
                             machineEnded = true;
                             break;
                         }
@@ -1361,15 +1400,56 @@ public class MainActivity extends Activity {
                     return;
                 }
 
+                // ── 收口前先把「到底接没接水」问准 ─────────────────────────
+                // 用户实测过两次相反的错：接过水却弹「接水已取消」（钱扣了），
+                // 以及一滴水没接却弹结算页。两种都是因为本地猜 amount。
+                // 服务端才是权威：停水后机器会自己结算，这时 amount/status 才回填。
+                // 所以先发停水指令，再盯几轮 sync 等它落定，最后拿这份数据判断。
+                if (userStopped) {
+                    final String title = "正在结束";
+                    final String sub = "已发送停水指令…";
+                    ui.post(() -> {
+                        stateTitle.setText(title);
+                        stateSub.setText(sub);
+                    });
+                    try {
+                        Api.call("goods/endWater", Api.params("goodsId", goodsId), Prefs.token(this));
+                    } catch (Api.ApiException ignored) {
+                    }
+                }
+                for (int k = 0; k < 5; k++) {
+                    try {
+                        Thread.sleep(800);
+                    } catch (InterruptedException ignored) {
+                    }
+                    if (mySession != sessionSeq) break;
+                    try {
+                        Object s2 = Api.call("goods/water/sync", Api.params("skuId", skuId), Prefs.token(this));
+                        if (s2 instanceof JSONObject) last = (JSONObject) s2;
+                    } catch (Api.ApiException e) {
+                        if (e.code == 2) throw e;
+                        break;
+                    }
+                    if (last == null) break;
+                    String lzRaw = last.optString("status", "");
+                    boolean lzHas = lzRaw != null && lzRaw.length() > 0
+                            && !"null".equals(lzRaw) && !"undefined".equals(lzRaw);
+                    int lzSt = lzHas ? (int) numOf(lzRaw) : -1;
+                    if (lzSt == 3 || lzSt == 5) break;                       // 服务器已收口
+                    if (numOf(last.optString("amount", "0")) > 0) break;     // 已知有钱产生
+                    if (userStopped) break;                                  // 主动取消的问一轮就够
+                }
+
                 // 完全没有消费（一直没按开始）：不要拿空订单去结算，
                 // 否则会生成一张 0 元废单，还会以「有未支付订单」挡住下一次接水。
                 // identify 不能用来判断 —— 它解锁后就有值，早期版本就是因为它，
                 // 没出水也去建单，最后弹出一张订单号 null 的结算页。
-                // 现在按官方口径（dex lambda$38 的 0043~0063）兜底：收口时 amount>0
-                // 就是接过水。真机上短单的 amount 往往直到收口才第一次变成正值，
-                // 只认 seenRunning 就会「钱扣了、页面说没接水」（用户实测）。
+                // 现在的判据：只有「真的看到过出水证据」才算接过水 ——
+                //   ① 见过真实信号（workStatus 0→2 / status 变了 / amount 涨过）
+                //   ② 全程 amount 涨过基线
+                //   ③ 收口这一刻 amount > 0（官方 dex lambda$38 的 0043~0063 也这么判）
                 double finalAmt = last == null ? 0 : numOf(last.optString("amount", "0"));
-                boolean took = seenRunning || everGrew || finalAmt > 0;
+                boolean took = sawRealSignal || everGrew || finalAmt > 0;
                 if (!took) {
                     try {
                         Api.call("goods/endWater", Api.params("goodsId", goodsId), Prefs.token(this));
@@ -1413,25 +1493,7 @@ public class MainActivity extends Activity {
                         actionBtn.setEnabled(false);
                     }
                 });
-                if (userStopped) {
-                    ui.post(() -> {
-                        stateTitle.setText("正在结束");
-                        stateSub.setText("已发送停水指令…");
-                    });
-                    try {
-                        Api.call("goods/endWater", Api.params("goodsId", goodsId), Prefs.token(this));
-                    } catch (Api.ApiException ignored) {
-                    }
-                    try {
-                        Thread.sleep(800);
-                    } catch (InterruptedException ignored) {
-                    }
-                    try {
-                        Object s = Api.call("goods/water/sync", Api.params("skuId", skuId), Prefs.token(this));
-                        if (s instanceof JSONObject) last = (JSONObject) s;
-                    } catch (Api.ApiException ignored) {
-                    }
-                }
+                if (mySession != sessionSeq) return;
                 if (last != null) finalNo = str(last, "identify");
                 if (finalNo.isEmpty() && orderNo != null) finalNo = orderNo;
 
