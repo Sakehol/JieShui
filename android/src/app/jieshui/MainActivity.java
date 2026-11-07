@@ -68,6 +68,19 @@ public class MainActivity extends Activity {
     private TextView stateTitle, stateSub, flowAmount;
     private Ui.RingView ring;
     private LinearLayout flowLine;
+    /** 对应机器面板【暂停】【结算】【取消】的那一排。 */
+    private LinearLayout flowActions;
+    private TextView btnPause, btnSettle, btnCancel;
+    /**
+     * 用户点过手机上的「开始接水」没有。点了就先把界面切到「接水中」，让这个动作
+     * 立刻有反馈；但**是否真的出水**仍然只看 sync.amount 增长，所以这个标记
+     * 不能当成 seenRunning 用 —— 否则用户点了按钮却一直没去机器上按开始，
+     * 最后会被当成"接过水"，去建一张 0 元废单。
+     */
+    private volatile boolean wantFlow = false;
+    /** 本机显示的「暂停」状态。服务端没有暂停接口，它只让「已接 N 秒」停止累加，
+     *  并提示用户去按机器上的【暂停】。真正的停水由机器面板完成。 */
+    private volatile boolean paused = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -862,13 +875,68 @@ public class MainActivity extends Activity {
         fllp.topMargin = Ui.dp(this, 12);
         ctrl.addView(flowLine, fllp);
 
+        // ── 对应机器面板上的【暂停】【结算】【取消】────────────────────────
+        // 饮水机面板是三个实体键：开始 / 暂停 / 结算。用户希望手机上也能看到对应的。
+        // 但服务端没有任何"开始接水/暂停/结算"的控制接口 —— 已把官方 APK 的 12 个
+        // dex 穷举过，goods/* 下只有 unlock / sync / endWater。真正出水、暂停、停下
+        // 都由机器面板完成。所以这三个键里：
+        //   · 结算 → 真的有用（走 endWater + 建单结算，等于从手机这一端结束这一单）
+        //   · 取消 → 真的有用（endWater 停水，不建单）
+        //   · 暂停 → 只是本机显示（停止「已接 N 秒」累加）+ 提示用户去按机器上的键
+        // 等待期（已解锁但还没出水）只显示【取消】—— 那时候没水可暂停、也没单可结算。
+        flowActions = Ui.row(this);
+        flowActions.setVisibility(View.GONE);
+        btnPause = Ui.ghostButton(this, "暂停");
+        btnSettle = Ui.ghostButton(this, "结算");
+        btnCancel = Ui.ghostButton(this, "取消");
+        btnPause.setOnClickListener(v -> togglePause());
+        btnSettle.setOnClickListener(v -> {
+            if (running) {
+                stopRequested = true;
+                if (btnSettle != null) btnSettle.setEnabled(false);
+                toast(this, "正在结算…");
+            } else {
+                toast(this, "现在没有正在进行的接水");
+            }
+        });
+        btnCancel.setOnClickListener(v -> {
+            if (running) {
+                stopRequested = true;
+                if (btnCancel != null) btnCancel.setEnabled(false);
+            } else {
+                leaveDevice();
+            }
+        });
+        Ui.pressable(btnPause);
+        Ui.pressable(btnSettle);
+        Ui.pressable(btnCancel);
+        flowActions.addView(btnPause, Ui.lpw(1f));
+        flowActions.addView(btnSettle, Ui.lpw(1f));
+        flowActions.addView(btnCancel, Ui.lpw(1f));
+        LinearLayout.LayoutParams falp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        falp.topMargin = Ui.dp(this, 10);
+        ctrl.addView(flowActions, falp);
+
         actionBtn = Ui.primaryButton(this, "开始接水");
         actionBtn.setEnabled(false);
         actionBtn.setOnClickListener(v -> {
             if (running) {
-                stopRequested = true;
-                actionBtn.setText("正在结束…");
-                actionBtn.setEnabled(false);
+                // 按钮文案是「结束接水」时点它 = 结束这一单
+                if ("结束接水".equals(String.valueOf(actionBtn.getText()))) {
+                    stopRequested = true;
+                    actionBtn.setText("正在结束…");
+                    actionBtn.setEnabled(false);
+                } else if ("开始接水".equals(String.valueOf(actionBtn.getText()))) {
+                    // 已在等待态时点「开始接水」= 只是把本机界面切到「接水中」，
+                    // 真正出水仍要靠机器面板的【开始】。不能置 seenRunning，否则
+                    // 点了却没去机器上按开始，最后会当成"接过水"去建 0 元废单。
+                    wantFlow = true;
+                    stateTitle.setText("接水中");
+                    stateSub.setText("请按机器上的「开始」出水");
+                    actionBtn.setText("结束接水");
+                    showFlowActions("flow");
+                }
             } else if (curSkuId == null || curSkuId.isEmpty()) {
                 // 不静默失败：可能是 SKU 没加载成功，重试一次并给出可见提示
                 toast(this, "还没拿到计费方式，正在重新加载…");
@@ -1192,10 +1260,11 @@ public class MainActivity extends Activity {
                 // 就当成「已经结算完」去建订单，否则会生成一张 0 元的废单。
                 ui.post(() -> {
                     stateTitle.setText("已就绪");
-                    stateSub.setText("请在机器上按「开始」");
+                    stateSub.setText("按机器上的「开始」，或点下方按钮");
                     ring.setPct(0.06f);
-                    actionBtn.setText("取消");
+                    actionBtn.setText("开始接水");
                     actionBtn.setEnabled(true);
+                    showFlowActions("wait");
                 });
 
                 JSONObject last = null;
@@ -1210,6 +1279,8 @@ public class MainActivity extends Activity {
                 int waterTicks = 0;      // 只有真出水才计数，用来显示「已接 N 秒」
                 // 解锁那一刻 sync.amount 的基线。-1 表示还没取到。之后只有比它大才算出水。
                 double baseAmount = -1;
+                // 用户点过手机上的「开始接水」没有。只影响界面反馈，不影响"是否出水"的判据。
+                boolean userStarted = false;
                 final int START_WAIT_TICKS = 75;   // 约 90 秒等用户按机器上的开始
                 while (true) {
                     if (stopRequested) {
@@ -1235,6 +1306,20 @@ public class MainActivity extends Activity {
                         return;
                     }
                     ticks++;
+                    // 用户在手机上点了「开始接水」：先把界面切到「接水中 / 等出水」。
+                    // 只是界面反馈 —— 真正出水仍要靠机器面板的【开始】，出水判据不变。
+                    if (wantFlow && !userStarted) {
+                        userStarted = true;
+                        wantFlow = false;
+                        watering = true;
+                        ui.post(() -> {
+                            stateTitle.setText("接水中");
+                            stateSub.setText("请按机器上的「开始」出水");
+                            ring.setPct(0.12f);
+                            if (actionBtn != null) actionBtn.setText("结束接水");
+                            showFlowActions("flow");
+                        });
+                    }
                     JSONObject sync = null;
                     try {
                         Object s = Api.call("goods/water/sync", Api.params("skuId", skuId), Prefs.token(this));
@@ -1278,13 +1363,14 @@ public class MainActivity extends Activity {
                             stateSub.setText("水已开，正在计量");
                             ring.setPct(0.12f);
                             if (actionBtn != null) actionBtn.setText("结束接水");
+                            showFlowActions("flow");
                         });
                     }
                     if (seenRunning && active) {
-                        waterTicks++;
+                        // 点过「暂停」时停住「已接 N 秒」的累加（真正的停水在机器面板上）
+                        if (!paused) waterTicks++;
                         final int fticks = waterTicks;
                         ui.post(() -> {
-                            // 暂停也算暂停，只在真正出水时段计数
                             flowAmount.setText(fmtElapsed(fticks * 1.2));
                             ring.setPct(Math.min(0.95f, 0.12f + fticks * 0.03f));
                         });
@@ -1292,9 +1378,15 @@ public class MainActivity extends Activity {
                         // 还没出水：这一轮仍在等用户在机器上按「开始」
                         if (active) {
                             sawActive = true;
+                            final boolean fStarted = userStarted;
                             ui.post(() -> {
-                                stateTitle.setText("已就绪");
-                                stateSub.setText("请在机器上按「开始」");
+                                if (fStarted) {
+                                    stateTitle.setText("接水中");
+                                    stateSub.setText("水还没出来，请按机器上的「开始」");
+                                } else {
+                                    stateTitle.setText("已就绪");
+                                    stateSub.setText("按机器上的「开始」，或点下方按钮");
+                                }
                             });
                         } else if (sawActive) {
                             // 解锁过（屏幕显示「设备已解锁」），但一直没按开始，机器自己收口了
@@ -1351,6 +1443,7 @@ public class MainActivity extends Activity {
                                 actionBtn.setEnabled(true);
                             }
                             if (flowLine != null) flowLine.setVisibility(View.GONE);
+                            resetFlowActions();
                         });
                     }
                     return;
@@ -1365,6 +1458,7 @@ public class MainActivity extends Activity {
                     running = false;
                     stopRequested = false;
                     watering = false;
+                    resetFlowActions();
                     if (actionBtn != null) {
                         actionBtn.setText("结算中…");
                         actionBtn.setEnabled(false);
@@ -2037,6 +2131,48 @@ public class MainActivity extends Activity {
     private void leaveDevice() {
         if (running && !watering) stopRequested = true;
         showHome();
+    }
+
+    /**
+     * 显示/隐藏「暂停 · 结算 · 取消」那一排。
+     *
+     * mode = "wait"  只有【取消】（已解锁但还没出水，没水可暂停、也没单可结算）
+     * mode = "flow"  三个都显示
+     * mode = null    全部隐藏
+     */
+    private void showFlowActions(String mode) {
+        if (flowActions == null) return;
+        flowActions.setVisibility(mode == null ? View.GONE : View.VISIBLE);
+        boolean onlyCancel = "wait".equals(mode);
+        if (btnPause != null) btnPause.setVisibility(onlyCancel ? View.GONE : View.VISIBLE);
+        if (btnSettle != null) btnSettle.setVisibility(onlyCancel ? View.GONE : View.VISIBLE);
+    }
+
+    /**
+     * 本机「暂停」开关。服务端没有暂停接口 —— 已把官方 APK 的 12 个 dex 穷举过，
+     * goods/* 下只有 unlock / sync / endWater，没有任何暂停/继续的端点。
+     * 所以这里只做两件本地的事：停住「已接 N 秒」的累加、把文案改成请用户去按机器上的键。
+     */
+    private void togglePause() {
+        paused = !paused;
+        if (btnPause != null) btnPause.setText(paused ? "继续" : "暂停");
+        if (paused) {
+            stateTitle.setText("已暂停");
+            stateSub.setText("请按机器上的【暂停】停水；要继续按【开始】");
+        } else {
+            stateTitle.setText("接水中");
+            stateSub.setText("水已开，正在计量");
+        }
+    }
+
+    /** 复位这一排（换页/结算后调用）。 */
+    private void resetFlowActions() {
+        paused = false;
+        wantFlow = false;
+        if (btnPause != null) btnPause.setText("暂停");
+        if (btnSettle != null) btnSettle.setEnabled(true);
+        if (btnCancel != null) btnCancel.setEnabled(true);
+        showFlowActions(null);
     }
 
     @Override

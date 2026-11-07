@@ -8,7 +8,7 @@
  *   - 接口请求（跨域 userapi）：完全不拦。
  * 另外 CACHE 版本号变了，activate 里会清掉旧缓存。
  */
-const CACHE = 'qk-v25';
+const CACHE = 'qk-v26';
 
 // 预缓存：装完就能离线打开一个可用壳
 const ASSETS = [
