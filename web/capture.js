@@ -408,6 +408,13 @@
     try { return JSON.parse(localStorage.getItem('qk_devices') || '[]'); } catch (_) { return []; }
   }
 
+  /* 设备名来自 localStorage（可能被别的页面/旧版本写脏），放进 innerHTML 前必须转义。
+     option 的 value 只放下标，不放设备名。 */
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g,
+      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
   function loadDevices() {
     const list = readDevices();
     if (!list.length) {
@@ -416,7 +423,7 @@
       return;
     }
     devSel.innerHTML = list.map((d, i) =>
-      '<option value="' + i + '">' + (d.name || d.goodsId || ('设备' + i)) + '</option>'
+      '<option value="' + i + '">' + esc(d.name || d.goodsId || ('设备' + i)) + '</option>'
     ).join('');
     devSel.onchange = () => pick(Number(devSel.value));
     pick(0);
