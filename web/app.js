@@ -8,6 +8,8 @@ const BASE = 'https://userapi.qiekj.com/';
 const APP_VERSION = '1.145.0';
 const UA = 'okhttp/3.14.9';
 const PROMOTIONS = '[{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"-6"},{"assetId":"0","oldPromotionId":"","orgId":"0","promotionId":"0","promotionType":"-7"},{"assetId":"0","oldPromotionId":"0","orgId":"0","promotionId":"0","promotionType":"8"}]';
+// goods/water/sync 的 workStatus：0 = 阀已开但用户还没按机器上的「开始」，2 = 正在出水。
+const WORK_IDLE = 0;
 const WORK_RUNNING = 2;
 
 /* ---------------- 存储 ----------------
@@ -1289,7 +1291,7 @@ async function startWater() {
     btn.disabled = false;
 
     let last = null, ticks = 0, userStopped = false;
-    let seenRunning = false, waitTicks = 0, netFailed = false;
+    let seenRunning = false, waitTicks = 0, netFailed = false, machineEnded = false;
     // 约 90 秒等用户按机器上的开始。测试里可以用 window.__startWaitTicks 缩短。
     const START_WAIT_TICKS = window.__startWaitTicks || 75;
     while (true) {
@@ -1315,11 +1317,16 @@ async function startWater() {
         continue;
       }
       last = sync || {};
-      const running = last.workStatus === WORK_RUNNING;
+      const ws = last.workStatus;
+      const running = ws === WORK_RUNNING;
       // sync.amount 不是金额，官方正是用它判断"这次有没有消费"——0 表示一滴水都没出。
       // 用它而不是只看 workStatus：用户按「开始」后马上按「结算」时，
       // 两次轮询之间可能整个 2→3 都过去了，只看 workStatus 会把这次真实消费当成没接水。
-      const consumed = Number(last.amount) > 0 || !!(last.identify);
+      //
+      // 注意 identify 必须用 falsy 判断，不能写 !!(last.identify) 之外的"非空字符串"判断：
+      // 服务端没出过水时这个字段可能是空串、也可能是 null。写成 `last.identify !== ''`
+      // 就会把 null 也当成"有值"，于是把一滴水没接的一次当成接了水去建单。
+      const consumed = Number(last.amount) > 0 || !!last.identify;
       if (running) {
         if (!seenRunning) {
           seenRunning = true;
@@ -1333,6 +1340,12 @@ async function startWater() {
         setRing(Math.min(95, 12 + ticks * 3));
       } else if (seenRunning || consumed) {
         break;                        // 确实接了水，进入结算
+      } else if (ws !== WORK_IDLE) {
+        // 扫完码一滴水都没接，直接在机器上点了「结算」——机器会离开空闲态。
+        // 以前这里只认 consumed，于是这种情况要干等约 90 秒，
+        // 最后还告诉用户「没有在机器上按开始」，但他明明按了结算。
+        machineEnded = true;
+        break;
       } else if (++waitTicks > START_WAIT_TICKS) {
         break;                        // 一直没开始，放弃这次
       }
@@ -1350,6 +1363,10 @@ async function startWater() {
       // 会以为是自己的操作问题，其实是根本没连上服务器。
       if (netFailed) {
         setState('网络不稳', '连不上服务器，请检查网络后重试');
+      } else if (machineEnded) {
+        // 扫完码没出水就直接在机器上点了「结算」。以前这里写「没有在机器上按开始」——
+        // 用户确实按了结算，这句话等于在说他的操作没发生。
+        setState('已结算', '机器上已结算，本次没有出水，未产生费用');
       } else {
         setState('已取消', userStopped ? '已取消，本次未接水' : '没有在机器上按开始，本次未接水');
       }
@@ -1386,6 +1403,7 @@ async function startWater() {
     setRing(100);
 
     let finalOrderNo = (last && last.identify) || orderNo0 || '';
+    if (finalOrderNo === 'null' || finalOrderNo === 'undefined') finalOrderNo = '';
     let orderId = null, detail = null;
     // 结算结果要如实告诉用户，不能一律说"已结算"：
     // 订单没建出来、或 order/sync 一直没成功时，订单其实是「待支付」，
@@ -1583,7 +1601,11 @@ function showResult(orderNo, orderId, detail, sync, settleState) {
   }
   // 订单没建出来时，手里的 orderNo 其实是 goods/water/sync 的 identify（服务端查不到），
   // 当成订单号展示会误导用户去原 App 里搜一个不存在的单号。
-  if (orderNo && settleState !== 'uncreated') rows.push(['订单号', orderNo]);
+  // 另外必须挡住字符串 "null"：服务端在「没出水」时返还的是 JSON null，
+  // 一路走到这里会变成货真价实的 "null"，直接显示在订单号那一栏。
+  if (orderNo && orderNo !== 'null' && orderNo !== 'undefined' && settleState !== 'uncreated') {
+    rows.push(['订单号', orderNo]);
+  }
 
   const kv = $('#resultRows');
   kv.innerHTML = rows.map(([k, v]) => `<div><span>${escapeHtml(k)}</span><b>${escapeHtml(v)}</b></div>`).join('');

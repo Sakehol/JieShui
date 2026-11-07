@@ -1185,7 +1185,7 @@ public class MainActivity extends Activity {
                 hdr.put("lng", Prefs.lng(this));
 
                 Object d = Api.call("goods/water/unlock", p, Prefs.token(this), hdr);
-                if (d instanceof JSONObject) orderNo = ((JSONObject) d).optString("orderNo", "");
+                if (d instanceof JSONObject) orderNo = str((JSONObject) d, "orderNo");
 
                 // 扫码即开阀之后，用户可能还没来得及按机器上的「开始」。
                 // 这段时间 workStatus 还不是 RUNNING —— 不能像以前那样一看到非 RUNNING
@@ -1202,6 +1202,7 @@ public class MainActivity extends Activity {
                 int ticks = 0;
                 boolean userStopped = false;
                 boolean seenRunning = false;
+                boolean machineEnded = false;
                 int waitTicks = 0;
                 final int START_WAIT_TICKS = 75;   // 约 90 秒等用户按机器上的开始
                 while (true) {
@@ -1248,7 +1249,8 @@ public class MainActivity extends Activity {
                     }
                     if (sync == null) break;
                     last = sync;
-                    boolean isRunning = sync.optInt("workStatus", 0) == Api.WORK_RUNNING;
+                    int ws = sync.optInt("workStatus", 0);
+                    boolean isRunning = ws == Api.WORK_RUNNING;
                     if (isRunning) {
                         if (!seenRunning) {
                             seenRunning = true;
@@ -1272,8 +1274,16 @@ public class MainActivity extends Activity {
                         // 可能都过去了，只盯 workStatus 会把这次真实消费当成没接水，
                         // 然后干等 90 秒才放弃 —— 网页端早就补了这个判断，APK 漏了。
                         boolean spent = sync != null && (numOf(sync.optString("amount", "0")) > 0
-                                || !sync.optString("identify", "").isEmpty());
+                                || !str(sync, "identify").isEmpty());
                         if (spent) break;
+                        // 扫完码一滴水都没接，直接在机器上点了「结算」：机器会离开空闲态
+                        // （workStatus 不再是 0）。以前这里只认 spent，于是这种情况要干等
+                        // 90 秒，最后还告诉用户「没有在机器上按开始」—— 但他明明按了结算。
+                        // 用「离开了空闲态」而不是死认某个具体值，是怕不同机型终态不一样。
+                        if (ws != Api.WORK_IDLE) {
+                            machineEnded = true;
+                            break;
+                        }
                         if (++waitTicks > START_WAIT_TICKS) break;
                     } else {
                         break;
@@ -1295,20 +1305,29 @@ public class MainActivity extends Activity {
                 // 落在两次轮询之间，seenRunning 永远是 false，但确实接了水。
                 boolean took = seenRunning || (last != null
                         && (numOf(last.optString("amount", "0")) > 0
-                        || !last.optString("identify", "").isEmpty()));
+                        || !str(last, "identify").isEmpty()));
                 if (!took) {
                     try {
                         Api.call("goods/endWater", Api.params("goodsId", goodsId), Prefs.token(this));
                     } catch (Api.ApiException ignored) {
                     }
                     final boolean fStopped = userStopped;
+                    final boolean fEnded = machineEnded;
                     if (mySession == sessionSeq) {
                         ui.post(() -> {
                             running = false;
                             stopRequested = false;
                             watering = false;
-                            stateTitle.setText("已取消");
-                            stateSub.setText(fStopped ? "已取消，本次未接水" : "没有在机器上按开始，本次未接水");
+                            if (fEnded) {
+                                // 扫完码没出水就直接在机器上点了「结算」。
+                                // 以前这里写「没有在机器上按开始」——用户确实按了结算，
+                                // 这句话等于在说他的操作没发生，所以他觉得「描述明显不对」。
+                                stateTitle.setText("已结算");
+                                stateSub.setText("机器上已结算，本次没有出水，未产生费用");
+                            } else {
+                                stateTitle.setText("已取消");
+                                stateSub.setText(fStopped ? "已取消，本次未接水" : "没有在机器上按开始，本次未接水");
+                            }
                             ring.setPct(0f);
                             if (actionBtn != null) {
                                 actionBtn.setText("开始接水");
@@ -1353,7 +1372,7 @@ public class MainActivity extends Activity {
                     } catch (Api.ApiException ignored) {
                     }
                 }
-                if (last != null) finalNo = last.optString("identify", "");
+                if (last != null) finalNo = str(last, "identify");
                 if (finalNo.isEmpty() && orderNo != null) finalNo = orderNo;
 
                 ui.post(() -> {
@@ -1382,8 +1401,8 @@ public class MainActivity extends Activity {
                             settleState = "uncreated";
                         } else {
                             settleState = "unpaid";
-                            String oid = co.optString("orderId", "");
-                            String rn = co.optString("orderNo", "");
+                            String oid = str(co, "orderId");
+                            String rn = str(co, "orderNo");
                             if (!rn.isEmpty()) realNo = rn;
                             String pt = co.optString("payType", "");
                             if (!pt.isEmpty()) payTypeUsed = pt;
@@ -1608,7 +1627,9 @@ public class MainActivity extends Activity {
             String payName = detail.optString("payTypeName", "");
             if (!payName.isEmpty()) rows.add(new String[]{"支付方式", payName});
         }
-        if (orderNo != null && !orderNo.isEmpty()) rows.add(new String[]{"订单号", orderNo});
+        if (orderNo != null && !orderNo.isEmpty() && !"null".equals(orderNo)) {
+            rows.add(new String[]{"订单号", orderNo});
+        }
 
         for (String[] r : rows) {
             LinearLayout line = Ui.row(this);
@@ -1920,6 +1941,29 @@ public class MainActivity extends Activity {
      * 把 sync.amount 这种"字符串数字"安全地转成 double。
      * 这个字段不是金额（官方只用它判断有没有消费），但也可能是空串或 "—"。
      */
+    /**
+     * 读字符串字段，把「缺字段 / JSON null / 字面量 "null"」统一当成空串。
+     *
+     * 必须用这个，不能直接用 optString(name, "")：org.json 的 optString 只在
+     * **键不存在**时才返回兜底值；键存在而值是 JSON null 时，它会把
+     * JSONObject.NULL 转成字符串 "null" 返回。
+     *
+     * 后果很具体：用户扫完码一滴水没接、直接在机器上点结算，服务端返回的
+     * identify 是 JSON null，于是 `!identify.isEmpty()` 恒为真 —— 被当成
+     * "这次接过水" 去建订单，最后结算页写着「订单没有生成成功」，
+     * 订单号那一栏还明晃晃一个 null。用户实测截图正是这个。
+     */
+    private static String str(JSONObject o, String key) {
+        if (o == null) return "";
+        Object v = o.opt(key);
+        if (v == null || v == JSONObject.NULL) return "";
+        if (v instanceof String) {
+            String s = (String) v;
+            return ("null".equals(s) || "undefined".equals(s)) ? "" : s;
+        }
+        return String.valueOf(v);
+    }
+
     private static double numOf(String s) {
         if (s == null || s.isEmpty()) return 0;
         try {

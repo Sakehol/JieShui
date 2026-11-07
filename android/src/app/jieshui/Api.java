@@ -40,6 +40,9 @@ public final class Api {
             "{\"assetId\":\"0\",\"oldPromotionId\":\"\",\"orgId\":\"0\",\"promotionId\":\"0\",\"promotionType\":\"-7\"}," +
             "{\"assetId\":\"0\",\"oldPromotionId\":\"0\",\"orgId\":\"0\",\"promotionId\":\"0\",\"promotionType\":\"8\"}]";
 
+    /** 机器空闲：阀已开但用户还没按机器上的「开始」，一滴水没出。 */
+    public static final int WORK_IDLE = 0;
+    /** 机器正在出水。 */
     public static final int WORK_RUNNING = 2;
 
     private Api() {}
