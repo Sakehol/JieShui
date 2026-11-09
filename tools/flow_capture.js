@@ -19,7 +19,7 @@ module.exports = async (page, { sleep, url }) => {
 
     // 注入假设备和假 token，确认设备下拉能读出来
     await page.evaluate(`
-      localStorage.setItem('qk_devices', JSON.stringify([{goodsId:'1101521735', name:'测试机', imei:'1', shopId:'1', categoryCode:'04'}]));
+      localStorage.setItem('qk_devices', JSON.stringify([{goodsId:'1100000001', name:'测试机', imei:'1', shopId:'1', categoryCode:'04'}]));
       sessionStorage.setItem('qk_token_session', 'fake-token-for-smoke');
       location.reload();
     `);

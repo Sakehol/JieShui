@@ -58,7 +58,7 @@ const MOCK = `
       window.__calls.push(path);
       // 故意放慢：模拟真实结算耗时，好在这段时间里采样按钮状态
       await new Promise(r=>setTimeout(r,900));
-      return J({orderId:'ord_99001', orderNo:'0620261106004023612291', orderStatus:1, payType:'15'});
+      return J({orderId:'ord_99001', orderNo:'0620261106000000000001', orderStatus:1, payType:'15'});
     }
     if (path in D) {
       window.__calls.push(path);

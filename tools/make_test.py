@@ -41,7 +41,7 @@ MOCK_BLOCK = r'''
                 // 以前从不清零，第二次进设备页第一轮 sync 就已经是 3，
                 // 于是等待期被当场跳过 —— 测出来的不是产品行为，是 mock 的残留。
                 mockSyncTicks = 0;
-                return "{\"code\":0,\"data\":{\"msgId\":\"m1\",\"orderNo\":\"0620261106004023612291\"}}";
+                return "{\"code\":0,\"data\":{\"msgId\":\"m1\",\"orderNo\":\"0620261106000000000001\"}}";
             case "goods/water/sync":
                 mockSyncTicks++;
                 // 下面这几个取值是 2026-11-08 02:03 真机抓包实测的，不是猜的：
@@ -83,7 +83,7 @@ MOCK_BLOCK = r'''
             case "payChannelRoute/addUserAfterPayChannel":
                 return "{\"code\":0,\"data\":null}";
             case "order/afterPay/creating":
-                return "{\"code\":0,\"data\":{\"orderId\":\"ord_99001\",\"orderNo\":\"0620261106004023612291\",\"orderStatus\":1,\"payType\":\"15\"}}";
+                return "{\"code\":0,\"data\":{\"orderId\":\"ord_99001\",\"orderNo\":\"0620261106000000000001\",\"orderStatus\":1,\"payType\":\"15\"}}";
             case "order/sync":
                 return "{\"code\":0,\"data\":{\"code\":\"0\",\"messageId\":\"msg_99001\"}}";
             case "order/detail":

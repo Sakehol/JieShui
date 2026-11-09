@@ -1402,7 +1402,7 @@ public class MainActivity extends Activity {
                 String settleState = finalNo.isEmpty() ? "none" : "uncreated";
                 // 展示用订单号：以 afterPay/creating 返回的 orderNo 为准。
                 // goods/water/sync 的 identify 只是「创建后付费订单」的凭据，不是最终订单号
-                // （官方单号形如 0620261106004023612291）。拿 identify 去调 order/sync，
+                // （官方单号形如 0620261106000000000001）。拿 identify 去调 order/sync，
                 // 服务端查不到这条单，订单就会永远停在「待支付」，还会挡住下一次接水。
                 String realNo = finalNo;
                 if (!finalNo.isEmpty()) {

@@ -1440,7 +1440,7 @@ async function startWater() {
           orderId = created.orderId;
           // 订单号以 afterPay/creating 返回的为准：它返回的就是官方 AfterPay 实体
           // {orderId, orderNo, orderStatus, payType}。goods/water/sync 的 identify 只是
-          // 用来「创建」后付费订单的凭据，不是最终订单号（官方单号形如 0620261106004023612291）。
+          // 用来「创建」后付费订单的凭据，不是最终订单号（官方单号形如 0620261106000000000001）。
           // 之前拿 identify 去调 order/sync，服务端查不到这条单，于是订单永远停在「待支付」，
           // 还会以「有未支付订单需要完成」挡住下一次接水。
           const realNo = created.orderNo || finalOrderNo;

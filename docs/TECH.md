@@ -366,8 +366,8 @@ order/detail             orderId          → waterUse.waterUseValueDesc, tradeO
 >
 > ```
 > #16 02:03:48  amount=null  identify=null                     status=6  workStatus=1   还没扫码
-> #21 02:03:55  amount=null  identify="0620261108020353..."    status=1  workStatus=2   扫完码，等按【开始】
-> #29 02:04:04  amount=59    identify="0620261108020353..."    status=5  workStatus=1   机器上按了【结算】
+> #21 02:03:55  amount=null  identify="0620261108xxxxxx..."    status=1  workStatus=2   扫完码，等按【开始】
+> #29 02:04:04  amount=59    identify="0620261108xxxxxx..."    status=5  workStatus=1   机器上按了【结算】
 > ```
 >
 > 第二次抓包（这次真的在机器上按了键）：

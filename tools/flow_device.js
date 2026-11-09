@@ -18,7 +18,7 @@ const MOCK = `
     'goods/water/sync': {workStatus:2, identify:'IDENTIFY_ABC', amount:'186', status:2},
     'goods/endWater': {},
     'payChannelRoute/addUserAfterPayChannel': {},
-    'order/afterPay/creating': {orderId:'ord_99001', orderNo:'0620261106004023612291', orderStatus:1, payType:'15'},
+    'order/afterPay/creating': {orderId:'ord_99001', orderNo:'0620261106000000000001', orderStatus:1, payType:'15'},
     // 官方 PayStateAct(mState=1) 调的就是它；code=="0" 才算支付成功
     'order/sync': {code:'0', messageId:'msg_99001'},
     // 真实结构：水量在 waterUse，金额在 tradeOrderItem[].originPrice / payPrice
