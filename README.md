@@ -248,6 +248,13 @@ python tools/make_test.py && bash build_test.sh   # → apk/jieshui-test.apk
 
 > `android_test/` 是 `tools/make_test.py` 生成的，**不要手改**，否则会跟真源码漂移。
 
+> **路径不能含中文。** 这个仓库现在放在 `default-workspace/胖乖生活简化/pgsh`，而 aapt2
+> 打不开非 ASCII 路径（报 `failed to open directory: 系统找不到指定的文件。(2)`，8.3 短路径也救不了）。
+> `build.sh` / `build_test.sh` 会自动把工程 `subst` 成一个空闲盘符再构建、结束时拆掉，所以直接
+> `bash build.sh` 就能用；手动折腾的话：
+> `MSYS2_ARG_CONV_EXCL='*' subst X: "<工程目录>" && cd /x && bash build.sh`。
+> 把仓库挪到纯 ASCII 路径下则完全不用管这条。
+
 ### 网页版
 
 ```bash

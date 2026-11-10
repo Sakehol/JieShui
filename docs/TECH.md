@@ -448,6 +448,16 @@ python tools/make_test.py && bash build_test.sh   # → apk/jieshui-test.apk
 
 > **bash 坑**：不要把 `D:/...` 这类 Windows 盘符直接拼进 `$PATH`，`D:` 会被当成路径分隔符导致 `javac: command not found`。用 `/d/...` 或绝对路径调用。
 
+> **中文路径坑**：`aapt2` 打不开含非 ASCII 字符的路径，会报
+> `<path>/android/res: error: failed to open directory: 系统找不到指定的文件。 (2)`。
+> 8.3 短路径（`DOCUME~1\...\胖乖生~1\pgsh`）**同样失败**，因为短名里照样带中文。
+> 而且 `-o` 的输出路径也必须落在映射盘符上，写到 `%TEMP%` 会报 `error: 数据无效。 (13)`。
+> `build.sh` / `build_test.sh` 已经做了自动处理：检测到非 ASCII 路径就挑一个空闲盘符
+> `MSYS2_ARG_CONV_EXCL='*' subst <盘符>: "$ROOT"`，把 `ROOT` 换成 `<盘符>:`，并用 `trap ... EXIT`
+> 在结束时 `subst <盘符>: /D` 拆掉。手动复现：
+> `MSYS2_ARG_CONV_EXCL='*' subst X: "<工程目录>" && cd /x && bash build.sh`，
+> 用完 `MSYS2_ARG_CONV_EXCL='*' subst X: /D`。
+
 ## 部署 PWA
 
 **已上线： <https://jieshui.pages.dev>**（Cloudflare Pages，响应头级 CSP 全部生效）
