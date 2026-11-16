@@ -621,9 +621,11 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
                         } else {
                             // 这一张没认出来，隔久一点再拍，别把电和 CPU 都耗在连拍上
                             lastPhotoAt = System.currentTimeMillis() + PHOTO_INTERVAL_MS;
-                            // 存下来一张，最多 3 张。用户反馈"这么清楚就是扫不上"时，
-                            // 这是唯一能拿到真图的途径 —— 凭空合成测试图会越猜越偏。
-                            dumpFailFrame(data);
+                            // 这里曾经会把失败的原始帧 dump 到相册（Pictures/接水扫码样张），
+                            // 那是 v1.0.5 为了收集"这么清楚就是扫不上"的样张而加的调试手段。
+                            // 两个问题：① 识别用的是内存里的 data，跟存盘毫无关系；
+                            //          ② 相册那条分支写完就 return，n>=3 的清理只在私有目录
+                            //             兜底分支里，等于无限增长。v1.2.1 起彻底删掉。
                             ui.post(() -> {
                                 hintView.setText("没识别到，把二维码再靠近点");
                                 // takePicture() 会把预览停掉，从而清空所有回调缓冲。
@@ -640,60 +642,6 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback, Ca
                 restartPreview();
             }
         });
-    }
-
-    /**
-     * 把一张识别失败的原始 JPEG 存下来，最多 3 张。
-     *
-     * 存在的意义只有一个：让"扫不上"能被查。用户说"这么明显的码扫不上"时，
-     * 我在电脑上合成的测试图未必和真机屏幕上的码一样（合成图里圆点码怎么都能解，
-     * 真机就是不行），凭猜测改算法是赌博。有了真图就能直接判定是
-     * "码本身不连通 / 摩尔纹 / 对焦糊" 哪一种，再对症下药。
-     *
-     * 存到相册（Pictures/接水扫码样张）而不是应用私有目录 —— 用户要能把图发出来，
-     * 私有目录得连电脑用 adb 才拿得到，太麻烦。Android 10 起写相册不需要权限；
-     * 更老的系统退回私有目录，不为了几张调试图去要存储权限。
-     */
-    private void dumpFailFrame(byte[] jpeg) {
-        try {
-            String name = "scanfail-" + System.currentTimeMillis() + ".jpg";
-            if (android.os.Build.VERSION.SDK_INT >= 29) {
-                android.content.ContentValues cv = new android.content.ContentValues();
-                cv.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name);
-                cv.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-                cv.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,
-                        android.os.Environment.DIRECTORY_PICTURES + "/接水扫码样张");
-                android.net.Uri uri = getContentResolver().insert(
-                        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
-                if (uri != null) {
-                    java.io.OutputStream os = getContentResolver().openOutputStream(uri);
-                    if (os != null) {
-                        try {
-                            os.write(jpeg);
-                        } finally {
-                            os.close();
-                        }
-                        return;
-                    }
-                }
-            }
-            // 老系统 / 相册写入失败：退回私有目录
-            java.io.File dir = new java.io.File(getFilesDir(), "scanfail");
-            if (!dir.exists()) dir.mkdirs();
-            java.io.File[] olds = dir.listFiles();
-            int n = olds == null ? 0 : olds.length;
-            if (n >= 3) {
-                java.util.Arrays.sort(olds, (x, y) -> Long.compare(x.lastModified(), y.lastModified()));
-                for (int i = 0; i <= n - 3; i++) olds[i].delete();
-            }
-            java.io.FileOutputStream fo = new java.io.FileOutputStream(new java.io.File(dir, name));
-            try {
-                fo.write(jpeg);
-            } finally {
-                fo.close();
-            }
-        } catch (Throwable ignored) {
-        }
     }
 
     /**
